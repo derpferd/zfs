@@ -1247,12 +1247,14 @@ snprintf_blkptr_compact(char *blkbuf, size_t buflen, const blkptr_t *bp)
 	} else {
 		(void) snprintf(blkbuf + strlen(blkbuf),
 		    buflen - strlen(blkbuf),
-		    "%llxL/%llxP F=%llu B=%llu/%llu",
+		    "%llxL/%llxP F=%llu B=%llu/%llu C=%llu,%s",
 		    (u_longlong_t)BP_GET_LSIZE(bp),
 		    (u_longlong_t)BP_GET_PSIZE(bp),
 		    (u_longlong_t)BP_GET_FILL(bp),
 		    (u_longlong_t)bp->blk_birth,
-		    (u_longlong_t)BP_PHYSICAL_BIRTH(bp));
+		    (u_longlong_t)BP_PHYSICAL_BIRTH(bp),
+			(u_longlong_t)BP_GET_COMPRESS(bp),
+			(&zio_compress_table[BP_GET_COMPRESS(bp)])->ci_name);
 	}
 }
 
@@ -1998,6 +2000,8 @@ dump_object(objset_t *os, uint64_t object, int verbosity, int *print_header)
 	}
 
 	if (verbosity >= 4) {
+//		printf("This is where I want to be!\n");
+//		printf("Compress: %u\n", dn->dn_phys->dn_compress);
 		(void) printf("\tdnode flags: %s%s%s%s\n",
 		    (dn->dn_phys->dn_flags & DNODE_FLAG_USED_BYTES) ?
 		    "USED_BYTES " : "",
