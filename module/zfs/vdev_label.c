@@ -303,6 +303,17 @@ vdev_config_generate_stats(vdev_t *vd, nvlist_t *nv)
 	    vsx->vsx_queue_histo[ZIO_PRIORITY_SCRUB],
 	    ARRAY_SIZE(vsx->vsx_queue_histo[ZIO_PRIORITY_SCRUB]));
 
+
+	/* Derp Model */
+	fnvlist_add_uint64_array(nvx, ZPOOL_CONFIG_VDEV_DERP_MODEL,
+			(uint64_t *)vsx->vsx_derp_ac_model,
+			DERP_AC_BC_BUCKETS*DERP_AC_NUM_OF_COMP_ALGS*DERP_AC_NUM_LEARN_VALUES);
+
+	fnvlist_add_uint64_array(nvx, ZPOOL_CONFIG_VDEV_DERP_DISK_BPS,
+			vsx->vsx_derp_disk_bps,
+			ARRAY_SIZE(vsx->vsx_derp_disk_bps));
+
+
 	/* Request sizes */
 	fnvlist_add_uint64_array(nvx, ZPOOL_CONFIG_VDEV_SYNC_IND_R_HISTO,
 	    vsx->vsx_ind_histo[ZIO_PRIORITY_SYNC_READ],

@@ -38,6 +38,7 @@
 #include <sys/avl.h>
 #include <sys/fs/zfs.h>
 #include <sys/zio_impl.h>
+#include <sys/derp_ac.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -464,6 +465,10 @@ struct zio {
 
 	/* Taskq dispatching state */
 	taskq_ent_t	io_tqent;
+
+	uint64_t test;
+//	uint64_t vsx_derp_ac_model[DERP_AC_BC_BUCKETS][DERP_AC_NUM_OF_COMP_ALGS][DERP_AC_NUM_LEARN_VALUES];
+//	uint64_t vsx_derp_disk_bps[ZIO_TYPES];
 };
 
 extern int zio_bookmark_compare(const void *, const void *);
@@ -616,6 +621,8 @@ boolean_t zbookmark_subtree_completed(const struct dnode_phys *dnp,
     const zbookmark_phys_t *subtree_root, const zbookmark_phys_t *last_block);
 int zbookmark_compare(uint16_t dbss1, uint8_t ibs1, uint16_t dbss2,
     uint8_t ibs2, const zbookmark_phys_t *zb1, const zbookmark_phys_t *zb2);
+
+extern size_t derp_compress_ac(zio_t *zio, void *dst, size_t s_len, enum zio_compress *compress);
 
 #ifdef	__cplusplus
 }

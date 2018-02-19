@@ -13,6 +13,7 @@ COMMON_H = \
 	$(top_srcdir)/include/sys/bqueue.h \
 	$(top_srcdir)/include/sys/dbuf.h \
 	$(top_srcdir)/include/sys/ddt.h \
+	$(top_srcdir)/include/sys/derp_ac.h \
 	$(top_srcdir)/include/sys/dmu.h \
 	$(top_srcdir)/include/sys/dmu_impl.h \
 	$(top_srcdir)/include/sys/dmu_objset.h \

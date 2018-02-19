@@ -49,6 +49,7 @@
 #include <sys/abd.h>
 #include <sys/zvol.h>
 #include <sys/zfs_ratelimit.h>
+#include <sys/derp_ac.h>
 
 /*
  * When a vdev is added, it will be divided into approximately (but no
@@ -3138,6 +3139,11 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 			}
 
 			if (zio->io_delta && zio->io_delay) {
+				// Update rolling average bps over 1000 ops.
+				derp_add_to_rolling_ave(derp_calc_bps(psize, zio->io_delay),
+						&vsx->vsx_derp_disk_bps[type],
+						1000);
+
 				vsx->vsx_queue_histo[zio->io_priority]
 				    [L_HISTO(zio->io_delta - zio->io_delay)]++;
 				vsx->vsx_disk_histo[type]

@@ -43,6 +43,7 @@
 #include <sys/time.h>
 #include <sys/trace_zio.h>
 #include <sys/abd.h>
+#include <sys/derp_ac.h>
 
 /*
  * ==========================================================================
@@ -1343,7 +1344,14 @@ zio_write_compress(zio_t *zio)
 	/* If it's a compressed write that is not raw, compress the buffer. */
 	if (compress != ZIO_COMPRESS_OFF && psize == lsize) {
 		void *cbuf = zio_buf_alloc(lsize);
-		psize = zio_compress_data(compress, zio->io_abd, cbuf, lsize);
+
+		// If AC is on compress it with the ac function.
+		if (compress == ZIO_COMPRESS_DERP_AC) {
+			psize = derp_ac_compress(zio, cbuf, lsize, &compress);
+		} else {
+			psize = zio_compress_data(compress, zio->io_abd, cbuf, lsize);
+		}
+
 		if (psize == 0 || psize == lsize) {
 			compress = ZIO_COMPRESS_OFF;
 			zio_buf_free(cbuf, lsize);

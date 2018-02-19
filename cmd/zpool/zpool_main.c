@@ -74,6 +74,7 @@ static int zpool_do_labelclear(int, char **);
 
 static int zpool_do_list(int, char **);
 static int zpool_do_iostat(int, char **);
+static int zpool_do_derp_stat(int, char **);
 static int zpool_do_status(int, char **);
 
 static int zpool_do_online(int, char **);
@@ -133,6 +134,7 @@ typedef enum {
 	HELP_HISTORY,
 	HELP_IMPORT,
 	HELP_IOSTAT,
+	HELP_DERP_STAT,
 	HELP_LABELCLEAR,
 	HELP_LIST,
 	HELP_OFFLINE,
@@ -252,6 +254,7 @@ static zpool_command_t command_table[] = {
 	{ NULL },
 	{ "list",	zpool_do_list,		HELP_LIST		},
 	{ "iostat",	zpool_do_iostat,	HELP_IOSTAT		},
+	{ "derpstat", zpool_do_derp_stat, HELP_DERP_STAT},
 	{ "status",	zpool_do_status,	HELP_STATUS		},
 	{ NULL },
 	{ "online",	zpool_do_online,	HELP_ONLINE		},
@@ -325,6 +328,8 @@ get_usage(zpool_help_t idx)
 		    "[-lq]]|[-rw]] [-T d | u] [-ghHLpPvy]\n"
 		    "\t    [[pool ...]|[pool vdev ...]|[vdev ...]]"
 		    " [interval [count]]\n"));
+	case HELP_DERP_STAT:
+		return (gettext("\tderpstat\n"));
 	case HELP_LABELCLEAR:
 		return (gettext("\tlabelclear [-f] <vdev>\n"));
 	case HELP_LIST:
@@ -2841,6 +2846,7 @@ typedef struct iostat_cbdata {
 	char **cb_vdev_names; /* Only show these vdevs */
 	unsigned int cb_vdev_names_count;
 	boolean_t cb_verbose;
+	boolean_t cb_derp_verbose;
 	boolean_t cb_literal;
 	boolean_t cb_scripted;
 	zpool_list_t *cb_list;
@@ -3609,6 +3615,49 @@ print_iostat_default(vdev_stat_t *vs, iostat_cbdata_t *cb, double scale)
 	    format, column_width, cb->cb_scripted);
 }
 
+static void
+print_derp_stat(iostat_cbdata_t *cb, nvlist_t *oldnv,
+    nvlist_t *newnv, double scale)
+{
+	int i;
+//	uint64_t val;
+	const char *names[] = {
+		ZPOOL_CONFIG_VDEV_DERP_MODEL,
+	};
+	struct stat_array *nva;
+	struct stat_array *derp_model;
+
+//	unsigned int column_width = 5;//default_column_width(cb, IOS_LATENCY);
+//	enum zfs_nicenum_format format;
+
+	nva = calc_and_alloc_stats_ex(names, ARRAY_SIZE(names), oldnv, newnv);
+	derp_model = &nva[0];
+
+//	if (cb->cb_literal)
+//		format = ZFS_NICENUM_RAWTIME;
+//	else
+//		format = ZFS_NICENUM_TIME;
+
+	printf("Model Dims: %ux%ux%u\n[", DERP_AC_BC_BUCKETS, DERP_AC_NUM_OF_COMP_ALGS, DERP_AC_NUM_LEARN_VALUES);
+	for (i = 0; i < derp_model->count; i++) {
+		if (i != 0) {
+			printf(", ");
+		}
+		printf("%lu", derp_model->data[i]);
+//		printf("Num: %lu\n", derp_model->data[i]);
+	}
+	printf("]\n");
+	// TODO: print disk bps.
+
+//	/* Print our avg latencies on the line */
+//	for (i = 0; i < ARRAY_SIZE(names); i++) {
+//		/* Compute average latency for a latency histo */
+//		val = single_histo_average(nva[i].data, nva[i].count) * scale;
+//		print_one_stat(val, format, column_width, cb->cb_scripted);
+//	}
+	free_calc_stats(nva, ARRAY_SIZE(names));
+}
+
 /*
  * Print out all the statistics for the given vdev.  This can either be the
  * toplevel configuration, or called recursively.  If 'name' is NULL, then this
@@ -3623,7 +3672,9 @@ print_vdev_stats(zpool_handle_t *zhp, const char *name, nvlist_t *oldnv,
 	nvlist_t **oldchild, **newchild;
 	uint_t c, children;
 	vdev_stat_t *oldvs, *newvs, *calcvs;
+	//vdev_stat_ex_t *oldvse, *newvse, *calcvse;
 	vdev_stat_t zerovs = { 0 };
+//	vdev_stat_ex_t zerovse = { 0 };
 	char *vname;
 	int i;
 	int ret = 0;
@@ -3631,12 +3682,16 @@ print_vdev_stats(zpool_handle_t *zhp, const char *name, nvlist_t *oldnv,
 	double scale;
 
 	calcvs = safe_malloc(sizeof (*calcvs));
+//	calcvse = safe_malloc(sizeof (*calcvse));
 
 	if (oldnv != NULL) {
 		verify(nvlist_lookup_uint64_array(oldnv,
 		    ZPOOL_CONFIG_VDEV_STATS, (uint64_t **)&oldvs, &c) == 0);
+//		verify(nvlist_lookup_uint64_array(oldnv,
+//				ZPOOL_CONFIG_VDEV_STATS_EX, (uint64_t **)&oldvse, &c) == 0);
 	} else {
 		oldvs = &zerovs;
+//		oldvse = &zerovse;
 	}
 
 	/* Do we only want to see a specific vdev? */
@@ -3661,6 +3716,8 @@ print_vdev_stats(zpool_handle_t *zhp, const char *name, nvlist_t *oldnv,
 
 	verify(nvlist_lookup_uint64_array(newnv, ZPOOL_CONFIG_VDEV_STATS,
 	    (uint64_t **)&newvs, &c) == 0);
+//	verify(nvlist_lookup_uint64_array(newnv, ZPOOL_CONFIG_VDEV_STATS_EX,
+//	    (uint64_t **)&newvse, &c) == 0);
 
 	/*
 	 * Print the vdev name unless it's is a histogram.  Histograms
@@ -3707,6 +3764,10 @@ print_vdev_stats(zpool_handle_t *zhp, const char *name, nvlist_t *oldnv,
 		printf("\n");
 		print_iostat_histos(cb, oldnv, newnv, scale, name);
 	}
+
+	printf("\nDerp:\n");
+	print_derp_stat(cb, oldnv, newnv, scale);
+	printf("End.\n");
 
 	if (cb->vcdl != NULL) {
 		char *path;
@@ -4335,6 +4396,14 @@ print_zpool_script_list(char *subcommand)
 	free(sp);
 }
 
+int
+zpool_do_derp_stat(int argc, char **argv)
+{
+	// TODO: write me :)
+	printf("Welcome to the derpy stats :)\n");
+	return 0;
+}
+
 /*
  * zpool iostat [[-c [script1,script2,...]] [-lq]|[-rw]] [-ghHLpPvy] [-n name]
  *              [-T d|u] [[ pool ...]|[pool vdev ...]|[vdev ...]]
@@ -4371,6 +4440,7 @@ zpool_do_iostat(int argc, char **argv)
 	unsigned long count = 0;
 	zpool_list_t *list;
 	boolean_t verbose = B_FALSE;
+	boolean_t derp_verbose= B_FALSE;
 	boolean_t latency = B_FALSE, l_histo = B_FALSE, rq_histo = B_FALSE;
 	boolean_t queues = B_FALSE, parsable = B_FALSE, scripted = B_FALSE;
 	boolean_t omit_since_boot = B_FALSE;
@@ -4387,7 +4457,7 @@ zpool_do_iostat(int argc, char **argv)
 	uint64_t unsupported_flags;
 
 	/* check options */
-	while ((c = getopt(argc, argv, "c:gLPT:vyhplqrwH")) != -1) {
+	while ((c = getopt(argc, argv, "c:gLPT:vyhplqrwHd")) != -1) {
 		switch (c) {
 		case 'c':
 			if (cmd != NULL) {
@@ -4428,6 +4498,10 @@ zpool_do_iostat(int argc, char **argv)
 			break;
 		case 'v':
 			verbose = B_TRUE;
+			break;
+		case 'd':
+			verbose = B_TRUE;
+			derp_verbose = B_TRUE;
 			break;
 		case 'p':
 			parsable = B_TRUE;
@@ -4480,6 +4554,7 @@ zpool_do_iostat(int argc, char **argv)
 	cb.cb_iteration = 0;
 	cb.cb_namewidth = 0;
 	cb.cb_verbose = verbose;
+	cb.cb_derp_verbose = derp_verbose;
 
 	/* Get our interval and count values (if any) */
 	if (guid) {

@@ -596,6 +596,10 @@ typedef struct zpool_rewind_policy {
 #define	ZPOOL_CONFIG_VDEV_ASYNC_W_LAT_HISTO	"vdev_async_w_lat_histo"
 #define	ZPOOL_CONFIG_VDEV_SCRUB_LAT_HISTO	"vdev_scrub_histo"
 
+/* Derp Stats */
+#define ZPOOL_CONFIG_VDEV_DERP_MODEL		"vdev_derp_model"
+#define ZPOOL_CONFIG_VDEV_DERP_DISK_BPS		"vdev_derp_disk_bps"
+
 /* Request size histograms */
 #define	ZPOOL_CONFIG_VDEV_SYNC_IND_R_HISTO	"vdev_sync_ind_r_histo"
 #define	ZPOOL_CONFIG_VDEV_SYNC_IND_W_HISTO	"vdev_sync_ind_w_histo"
@@ -881,7 +885,13 @@ typedef struct vdev_stat {
 	uint64_t	vs_scan_processed;	/* scan processed bytes	*/
 	uint64_t	vs_fragmentation;	/* device fragmentation */
 
+	uint64_t	vs_test;
+
 } vdev_stat_t;
+
+#define DERP_AC_BC_BUCKETS 5
+#define DERP_AC_NUM_OF_COMP_ALGS 3
+#define DERP_AC_NUM_LEARN_VALUES 2
 
 /*
  * Extended stats
@@ -933,6 +943,11 @@ typedef struct vdev_stat_ex {
 	/* Delegated (aggregated) physical IO histogram */
 	uint64_t vsx_agg_histo[ZIO_PRIORITY_NUM_QUEUEABLE]
 	    [VDEV_RQ_HISTO_BUCKETS];
+
+	uint64_t vsx_derp_ac_model[DERP_AC_BC_BUCKETS][DERP_AC_NUM_OF_COMP_ALGS][DERP_AC_NUM_LEARN_VALUES];
+	uint64_t vsx_derp_disk_bps[ZIO_TYPES];
+
+	uint64_t test;
 
 } vdev_stat_ex_t;
 
