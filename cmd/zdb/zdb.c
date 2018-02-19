@@ -1221,11 +1221,13 @@ snprintf_blkptr_compact(char *blkbuf, size_t buflen, const blkptr_t *bp)
 
 	if (BP_IS_EMBEDDED(bp)) {
 		(void) sprintf(blkbuf,
-		    "EMBEDDED et=%u %llxL/%llxP B=%llu",
+		    "EMBEDDED et=%u %llxL/%llxP B=%llu C=%llu,%s",
 		    (int)BPE_GET_ETYPE(bp),
 		    (u_longlong_t)BPE_GET_LSIZE(bp),
 		    (u_longlong_t)BPE_GET_PSIZE(bp),
-		    (u_longlong_t)bp->blk_birth);
+		    (u_longlong_t)bp->blk_birth,
+			(u_longlong_t)BP_GET_COMPRESS(bp),
+			(&zio_compress_table[BP_GET_COMPRESS(bp)])->ci_name);
 		return;
 	}
 
