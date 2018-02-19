@@ -114,22 +114,24 @@ void derp_set_default_compress(enum zio_compress *compress) {
 }
 
 
-void derp_update_vdev_stats(vdev_t *rvd, uint64_t bc_bucket, uint64_t compress, uint64_t bps, uint64_t ratio)
+void derp_update_vdev_stats(vdev_t *vd, uint64_t bc_bucket, uint64_t compress, uint64_t bps, uint64_t ratio)
 {
 //	uint64_t min_delay = 0;
 
-//	if (!vd->vdev_children) { // is leaf
-	derp_add_to_rolling_ave(bps,
-			&rvd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][COMPRESS_RATE_INDEX],
-			1000);
-	derp_add_to_rolling_ave(ratio,
-			&rvd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][COMPRESS_RATIO_INDEX],
-			1000);
+	if (!vd->vdev_children) { // is leaf
+		dprintf("hi vd:%u updating element[%u][%u][%u] with value %u", vd->vdev_id, bc_bucket, compress, COMPRESS_RATE_INDEX, bps);
+		derp_add_to_rolling_ave(bps,
+				&vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][COMPRESS_RATE_INDEX],
+				1000);
+		dprintf("hi updated to %u", vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][COMPRESS_RATE_INDEX]);
+		derp_add_to_rolling_ave(ratio,
+				&vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][COMPRESS_RATIO_INDEX],
+				1000);
 //		compress_vdev_queue_delay(size, vd);
-//	} else {
-//		int i;
-//		for (i = 0; i < vd->vdev_children; i++) {
-//			derp_update_vdev_stats(vd->vdev_child[i], bc_bucket, compress, bps, ratio);
+	} else {
+		int i;
+		for (i = 0; i < vd->vdev_children; i++) {
+			derp_update_vdev_stats(vd->vdev_child[i], bc_bucket, compress, bps, ratio);
 //			if (vdev_delay) {
 //				if (min_delay == 0) {
 //					min_delay = vdev_delay;
@@ -137,8 +139,8 @@ void derp_update_vdev_stats(vdev_t *rvd, uint64_t bc_bucket, uint64_t compress, 
 //					min_delay = vdev_delay;
 //				}
 //			}
-//		}
-//	}
+		}
+	}
 //	return (min_delay);
 }
 
