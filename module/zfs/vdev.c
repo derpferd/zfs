@@ -3143,6 +3143,9 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 				derp_add_to_rolling_ave(derp_calc_bps(psize, zio->io_delay),
 						&vsx->vsx_derp_disk_bps[type],
 						1000);
+				derp_add_to_rolling_ave(derp_calc_bps(psize, zio->io_delta),
+						&vsx->vsx_derp_total_bps[type],
+						1000);
 
 				vsx->vsx_queue_histo[zio->io_priority]
 				    [L_HISTO(zio->io_delta - zio->io_delay)]++;

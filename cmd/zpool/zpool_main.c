@@ -3609,6 +3609,7 @@ print_iostat_default(vdev_stat_t *vs, iostat_cbdata_t *cb, double scale)
 	    format, column_width, cb->cb_scripted);
 	print_one_stat((uint64_t)(vs->vs_ops[ZIO_TYPE_WRITE] * scale),
 	    format, column_width, cb->cb_scripted);
+	fprintf(stderr, "bytes: %lu, scale: %f\n", vs->vs_bytes[ZIO_TYPE_WRITE], scale);
 	print_one_stat((uint64_t)(vs->vs_bytes[ZIO_TYPE_READ] * scale),
 	    format, column_width, cb->cb_scripted);
 	print_one_stat((uint64_t)(vs->vs_bytes[ZIO_TYPE_WRITE] * scale),
@@ -3648,6 +3649,7 @@ print_derp_stat(iostat_cbdata_t *cb, nvlist_t *oldnv,
 	}
 	printf("]\n");
 	// TODO: print disk bps.
+//	printf("Disk BPS: {}\n")
 
 //	/* Print our avg latencies on the line */
 //	for (i = 0; i < ARRAY_SIZE(names); i++) {
@@ -3738,6 +3740,7 @@ print_vdev_stats(zpool_handle_t *zhp, const char *name, nvlist_t *oldnv,
 
 	/* Calculate our scaling factor */
 	tdelta = newvs->vs_timestamp - oldvs->vs_timestamp;
+	fprintf(stderr, "old: %lld new: %lld\n", oldvs->vs_timestamp, newvs->vs_timestamp);
 	if ((oldvs->vs_timestamp == 0) && (cb->cb_flags & IOS_ANYHISTO_M)) {
 		/*
 		 * If we specify printing histograms with no time interval, then

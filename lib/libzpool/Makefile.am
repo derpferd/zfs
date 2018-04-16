@@ -45,6 +45,7 @@ KERNEL_C = \
 	ddt.c \
 	ddt_zap.c \
 	derp_ac.c \
+	derp_bytecounter.c \
 	dmu.c \
 	dmu_diff.c \
 	dmu_object.c \

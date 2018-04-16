@@ -1346,7 +1346,7 @@ zio_write_compress(zio_t *zio)
 		void *cbuf = zio_buf_alloc(lsize);
 
 		// If AC is on compress it with the ac function.
-		if (compress == ZIO_COMPRESS_DERP_AC) {
+		if (compress == ZIO_COMPRESS_DERP_AC || compress == ZIO_COMPRESS_DERP_AC_TRAIN) {
 			psize = derp_ac_compress(zio, cbuf, lsize, &compress);
 		} else {
 			psize = zio_compress_data(compress, zio->io_abd, cbuf, lsize);

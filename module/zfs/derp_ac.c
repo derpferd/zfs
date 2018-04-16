@@ -1,36 +1,33 @@
 #include <sys/derp_ac.h>
 #include <sys/spa_impl.h>
 #include <sys/vdev_impl.h>
-//#include <sys/zio_impl.h>
-//#include <sys/spa.h>
-//#include <sys/zfs_context.h>
-//#include <sys/fm/fs/zfs.h>
-//#include <sys/spa.h>
-//#include <sys/spa_impl.h>
-//#include <sys/dmu.h>
-//#include <sys/dmu_tx.h>
-//#include <sys/uberblock_impl.h>
-//#include <sys/metaslab.h>
-//#include <sys/metaslab_impl.h>
-//#include <sys/space_map.h>
-//#include <sys/space_reftree.h>
-//#include <sys/zio.h>
-//#include <sys/zap.h>
-//#include <sys/fs/zfs.h>
-//#include <sys/arc.h>
-//#include <sys/zil.h>
-//#include <sys/dsl_scan.h>
-//#include <sys/abd.h>
-//#include <sys/zvol.h>
-//#include <sys/zfs_ratelimit.h>
+#include <sys/derp_bytecounter.h>
 
 
-enum zio_compress compress_funcs[DERP_AC_NUM_OF_COMP_ALGS] = {
+typedef uint64_t derp_compress;
+
+#define derp_for_each_compress(derp_c) \
+    for(derp_c = 0; derp_c < DERP_AC_NUM_OF_COMP_ALGS; derp_c++)
+
+enum zio_compress derp_compress_funcs[DERP_AC_NUM_OF_COMP_ALGS] = {
 		ZIO_COMPRESS_EMPTY,
 		ZIO_COMPRESS_LZ4,
 		ZIO_COMPRESS_GZIP_1
 };
 
+size_t derp_compress_data(enum zio_compress c, void *src, void *dst, size_t s_len);
+static int derp_zeroed_cb(void *data, size_t len, void *private);
+
+typedef struct bps_variables {
+	uint64_t bc_bucket;
+	derp_compress compress;
+//	TODO: add other variables like cpu usage.
+} derp_bps_variables_t;
+
+typedef struct ratio_variables {
+	uint64_t bc_bucket;
+	derp_compress compress;
+} derp_ratio_variables_t;
 
 // Taken from: https://en.wikipedia.org/wiki/Linear-feedback_shift_register.
 uint16_t lfsr = 0xACE1u;
@@ -39,7 +36,7 @@ uint16_t rand_int16(void) {
 	return lfsr  = (lfsr >> 1) | (bit << 15);
 }
 
-uint64_t zio_compress_to_derp_compress(enum zio_compress compress) {
+derp_compress zio_compress_to_derp_compress(enum zio_compress compress) {
 	switch (compress) {
 		case ZIO_COMPRESS_INHERIT:
 			return -1;
@@ -75,6 +72,8 @@ uint64_t zio_compress_to_derp_compress(enum zio_compress compress) {
 			return 1;
 		case ZIO_COMPRESS_DERP_AC:
 			return -1;
+		case ZIO_COMPRESS_DERP_AC_TRAIN:
+			return -1;
 		case ZIO_COMPRESS_FUNCTIONS:
 			return -1;
 	}
@@ -102,31 +101,67 @@ uint64_t derp_calc_time_from_bps(uint64_t bps, uint64_t bytes) {
 }
 
 uint64_t derp_calc_compress_ratio(uint64_t start_bytes, uint64_t end_bytes) {
-	return (start_bytes*BYTES_FACTOR) / end_bytes;
+	return (end_bytes*BYTES_FACTOR) / start_bytes;
 }
 
 uint64_t derp_calc_compressed_size(uint64_t start_bytes, uint64_t compress_ratio) {
 	return (start_bytes*BYTES_FACTOR) / compress_ratio;
 }
 
+uint64_t derp_apply_compress_ratio(uint64_t bytes, uint64_t ratio) {
+	// Hack to overcome intater overflow
+	return ((bytes/10000)*(ratio/100000));
+//	return (bytes*ratio)/BYTES_FACTOR;
+}
+
+uint64_t* derp_get_bps(vdev_stat_ex_t *stats, derp_bps_variables_t *vars) {
+	dprintf("derp: getting element[%u][%u][%u]", vars->bc_bucket, vars->compress, DERP_COMPRESS_RATE_INDEX);
+	return &stats->vsx_derp_ac_model[vars->bc_bucket][vars->compress][DERP_COMPRESS_RATE_INDEX];
+}
+
+uint64_t* derp_get_ratio(vdev_stat_ex_t *stats, derp_ratio_variables_t *vars) {
+	dprintf("derp: getting element[%u][%u][%u]", vars->bc_bucket, vars->compress, DERP_COMPRESS_RATIO_INDEX);
+	return &stats->vsx_derp_ac_model[vars->bc_bucket][vars->compress][DERP_COMPRESS_RATIO_INDEX];
+}
+
 void derp_set_default_compress(enum zio_compress *compress) {
 	*compress = ZIO_COMPRESS_EMPTY;
 }
 
+vdev_stat_ex_t* derp_get_vdev_ex_stats(vdev_t *vd) {
+	if (!vd->vdev_children) {
+		return &vd->vdev_stat_ex;
+	}
+//	else {
+	// Just use the first child;
+	return derp_get_vdev_ex_stats(vd->vdev_child[0]);
+//		for (int i = 0; i < vd->vdev_children; i++) {
+//
+//		}
+//	}
+}
 
-void derp_update_vdev_stats(vdev_t *vd, uint64_t bc_bucket, uint64_t compress, uint64_t bps, uint64_t ratio)
-{
+vdev_stat_t* derp_get_vdev_stats(vdev_t *vd) {
+	if (!vd->vdev_children) {
+		return &vd->vdev_stat;
+	}
+	return derp_get_vdev_stats(vd->vdev_child[0]);
+}
+
+void derp_update_vdev_stats(vdev_t *vd, uint64_t bc_bucket, uint64_t compress, uint64_t bps, uint64_t ratio) {
 //	uint64_t min_delay = 0;
 
 	if (!vd->vdev_children) { // is leaf
-		dprintf("hi vd:%u updating element[%u][%u][%u] with value %u", vd->vdev_id, bc_bucket, compress, COMPRESS_RATE_INDEX, bps);
+		dprintf("derp: vd:%u updating element[%u][%u][%u] with value %u", vd->vdev_id, bc_bucket, compress, DERP_COMPRESS_RATE_INDEX, bps);
 		derp_add_to_rolling_ave(bps,
-				&vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][COMPRESS_RATE_INDEX],
+				&vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][DERP_COMPRESS_RATE_INDEX],
 				1000);
-		dprintf("hi updated to %u", vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][COMPRESS_RATE_INDEX]);
+		dprintf("derp: updated to %u", vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][DERP_COMPRESS_RATE_INDEX]);
+		dprintf("derp: vd:%u updating element[%u][%u][%u] with value %u", vd->vdev_id, bc_bucket, compress, DERP_COMPRESS_RATIO_INDEX, bps);
 		derp_add_to_rolling_ave(ratio,
-				&vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][COMPRESS_RATIO_INDEX],
+				&vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][DERP_COMPRESS_RATIO_INDEX],
 				1000);
+		dprintf("derp: updated to %u", vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][DERP_COMPRESS_RATIO_INDEX]);
 //		compress_vdev_queue_delay(size, vd);
 	} else {
 		int i;
@@ -144,13 +179,75 @@ void derp_update_vdev_stats(vdev_t *vd, uint64_t bc_bucket, uint64_t compress, u
 //	return (min_delay);
 }
 
-void derp_update_model(vdev_t *rvd, enum zio_compress *compress, hrtime_t compress_delay, uint64_t lsize, uint64_t psize) {
+void derp_update_model(vdev_t *rvd, enum zio_compress *compress, hrtime_t compress_delay, uint64_t lsize, uint64_t psize, uint64_t bc_bucket) {
 //void derp_update_model(zio_t *pio, enum zio_compress *compress, hrtime_t compress_delay, uint64_t lsize, uint64_t psize) {
 	if (compress_delay == 0 || lsize == 0 || psize == 0) return;
 	uint64_t derp_compress = zio_compress_to_derp_compress(*compress);
 	uint64_t bps = derp_calc_bps(lsize, compress_delay);
 	uint64_t ratio = derp_calc_compress_ratio(lsize, psize);
-	derp_update_vdev_stats(rvd, 0, derp_compress, bps, ratio);
+	derp_update_vdev_stats(rvd, bc_bucket, derp_compress, bps, ratio);
+}
+
+enum zio_compress derp_rand_compress(void) {
+	uint16_t i = rand_int16() % DERP_AC_NUM_OF_COMP_ALGS;
+	return derp_compress_funcs[i];
+//	return ZIO_COMPRESS_EMPTY;
+}
+
+enum zio_compress derp_get_best_compress(vdev_stat_ex_t *stats, enum zio_type type, uint64_t bc_bucket) {
+	/*
+	 * How to get the best compression alg.
+	 * Find the compression alg. that maximizes Total Write Rate (TWR).
+	 *  TWR = CR(Compression Rate) + DR(Current Disk Rate)*CRatio(Compression Ratio)
+	 *  TWT = CR(Compression time) + (DR(Current Disk Rate)*CRatio(Compression Ratio)
+	 *
+	 */
+	dprintf("Yo Dog 1");
+	enum zio_compress c;
+	derp_compress derp_c;
+	derp_bps_variables_t bps_vars;
+	derp_ratio_variables_t ratio_vars;
+//	uint64_t cur_bps = stats->vsx_derp_disk_bps[type];
+//	uint64_t cur_total_bps = stats->vsx_derp_total_bps[type];
+//	cur_total_bps = stats->max_bps;
+	uint64_t max_disk_bps = stats->max_bps;
+
+	bps_vars.bc_bucket = bc_bucket;
+	ratio_vars.bc_bucket = bc_bucket;
+
+	uint64_t max_twr = 0;
+	enum zio_compress best_c = ZIO_COMPRESS_EMPTY; // Default to no compression
+	dprintf("Picking best...");
+	dprintf("\tMax Disk BPS: %lu \tBucket: %u", max_disk_bps, bc_bucket);
+	derp_for_each_compress(derp_c) {
+		c = derp_compress_funcs[derp_c];
+		bps_vars.compress = derp_c;
+		ratio_vars.compress = derp_c;
+
+		uint64_t c_rate = *derp_get_bps(stats, &bps_vars);
+		uint64_t c_ratio = *derp_get_ratio(stats, &ratio_vars);
+
+		uint64_t twr;
+//		uint64_t MAX_RATE = (uint64_t)BYTES_FACTOR * 10;
+//		MAX_RATE = MAX_RATE *10;
+		if (c_rate > MAX_RATE) {
+			twr = derp_apply_compress_ratio(max_disk_bps, c_ratio);
+		} else {
+			twr = (max_disk_bps*c_rate) / (max_disk_bps + (derp_apply_compress_ratio(c_rate, c_ratio)));
+		}
+		dprintf("derp:\tc: %s  \trate:%lu   \tratio:%lu  \ttwr:%lu rate: %lu", (&zio_compress_table[c])->ci_name, c_rate, c_ratio, twr, derp_apply_compress_ratio(c_rate, c_ratio));
+//		dprintf("derp:　　　　c: %s c_ratio: %u X: %u Y:%u", (&zio_compress_table[c])->ci_name, c_ratio, c_rate*c_ratio, (c_rate*c_ratio)/BYTES_FACTOR);
+//		dprintf("derp:　　　　c: %s twr: %u = (%u*%u) / (%u + %u)", (&zio_compress_table[c])->ci_name, twr, cur_bps, c_rate, cur_bps, derp_apply_compress_ratio(c_rate, c_ratio));
+//		dprintf("derp:　　　　c: %s twr: %u = (%u) / (%u)", (&zio_compress_table[c])->ci_name, twr, cur_bps*c_rate, cur_bps+derp_apply_compress_ratio(c_rate, c_ratio));
+		if (twr == 0) {
+			return c;
+		}
+		if (twr > max_twr) {
+			max_twr = twr;
+			best_c = c;
+		}
+	}
+	return best_c;
 }
 
 size_t derp_ac_compress(zio_t *zio, void *dst, size_t s_len, enum zio_compress *compress) {
@@ -175,26 +272,105 @@ size_t derp_ac_compress(zio_t *zio, void *dst, size_t s_len, enum zio_compress *
 
 	// Decide compress here
 //	uint64_t bc_bucket = 0;
+//	derp_test();
 
 	size_t psize;
 	vdev_t *rvd = zio->io_spa->spa_root_vdev;
 	zio_t *pio = zio_unique_parent(zio);
+	uint training = 0;
+	if (*compress == ZIO_COMPRESS_DERP_AC_TRAIN) {
+		training = 1;
+	}
 
 	derp_set_default_compress(compress);
 
 	if (pio == NULL) {
 		psize = zio_compress_data(*compress, zio->io_abd, dst, s_len);
 	} else {
-		uint16_t i = rand_int16() % DERP_AC_NUM_OF_COMP_ALGS;
-		*compress = compress_funcs[i];
+
+		/*
+		 * If the data is all zeroes, we don't even need to allocate
+		 * a block for it.  We indicate this by returning zero size.
+		 */
+		if (abd_iterate_func(zio->io_abd, 0, s_len, derp_zeroed_cb, NULL) == 0)
+			return (0);
+
+//		psize = zio_compress_data(*compress, zio->io_abd, dst, s_len);
+		/* No compression algorithms can read from ABDs directly */
+		void *tmp = abd_borrow_buf_copy(zio->io_abd, s_len);
+		uint64_t bytecount = derp_bytecounter(tmp, s_len);  // TODO: make this read directly from the ABD.
+		uint64_t bc_bucket = derp_to_Q_type(bytecount);
+
+		dprintf("derp: bytecount: %u bucket: %u", bytecount, bc_bucket);
+		if (training) {
+			if (zio->io_type == ZIO_TYPE_WRITE) {
+				vdev_stat_ex_t* ex_stats = derp_get_vdev_ex_stats(rvd);
+//				vdev_stat_ex_t* ex_stats = kmem_alloc(sizeof(vdev_stat_ex_t), KM_SLEEP);// = derp_get_vdev_ex_stats(rvd);
+				vdev_stat_t* vs = kmem_alloc(sizeof(vdev_stat_t), KM_SLEEP);// = derp_get_vdev_stats(rvd);
+//				vdev_stat_t test_stats;
+				vdev_get_stats(rvd, vs);
+				hrtime_t measuring_interval = SECOND;
+				//measuring_interval = measuring_interval;
+//				if (ex_stats->last_update == 0) {
+//					ex_stats->last_update = gethrtime();
+//					ex_stats->test = vs->vs_bytes[zio->io_type]
+//				} else
+				if (ex_stats->old_timestamp == 0) {
+					ex_stats->old_timestamp = vs->vs_timestamp;
+					ex_stats->old_bytes = vs->vs_bytes[ZIO_TYPE_WRITE];
+//					ex_stats->test = vs->vs_bytes[zio->io_type];
+					dprintf("derp: Setting up bps counter");
+				} else
+				if (ex_stats->old_timestamp + measuring_interval < vs->vs_timestamp) {
+					uint64_t tmp_bytes = vs->vs_bytes[ZIO_TYPE_WRITE] - ex_stats->old_bytes;
+					uint64_t tdelta = vs->vs_timestamp - ex_stats->old_timestamp;
+					uint64_t bps = derp_calc_bps(tmp_bytes, tdelta);
+//					double scale = (double)SECOND / tdelta;
+//					uint64_t tmp_bytes = vs->vs_bytes[zio->io_type];
+//					hrtime_t tmp_time = gethrtime();
+//					dprintf("derp: temp_max_bps: %lu. %lu bytes in %lu ns", derp_calc_bps(tmp_bytes-ex_stats->test, tmp_time-ex_stats->last_update), tmp_bytes-ex_stats->test, tmp_time-ex_stats->last_update);
+					dprintf("derp: bps: %lu. tmp_bytes: %lu in %lu ns", bps, tmp_bytes, tdelta);
+//					tmp_bytes = derp_calc_bps(tmp_bytes-ex_stats->test, tmp_time-ex_stats->last_update);
+					if (bps > ex_stats->max_bps) {
+						ex_stats->max_bps = bps;
+					}
+					ex_stats->old_timestamp = vs->vs_timestamp;
+					ex_stats->old_bytes = vs->vs_bytes[ZIO_TYPE_WRITE];
+//					ex_stats->last_update = tmp_time;
+//					ex_stats->test = tmp_bytes;
+//					dprintf("derp: updated max_bps: %lu", ex_stats->max_bps);
+				} else {
+//					dprintf("derp: waiting old: %lld new: %lld cur: %lld", ex_stats->old_timestamp, vs->vs_timestamp, gethrtime());
+//					dprintf("derp: waiting (%lu + %lu) - %lu more nanosecs", stats->last_update, SECOND, gethrtime());
+	//				dprintf("derp: max_bps: %lu", stats->max_bps);
+//					dprintf("derp: .");
+//					dprintf("derp: test %lld", test_stats.vs_timestamp);
+//					dprintf("derp: bytes %lld", test_stats.vs_bytes[ZIO_TYPE_WRITE]);
+				}
+
+				kmem_free(vs, sizeof(vdev_stat_t));
+			} else {
+				dprintf("derp: warning!!!! Training but zio type isn't write.");
+			}
+			dprintf("derp: Training");
+			*compress = derp_rand_compress();
+			dprintf("derp: picked rand %u", *compress);
+		} else {
+			dprintf("derp: Not Training");
+			*compress = derp_get_best_compress(derp_get_vdev_ex_stats(rvd), zio->io_type, bc_bucket);
+			dprintf("derp: picked %u", *compress);
+		}
+//		dprintf("derp: bytes: %lu", derp_get_vdev_stats(rvd)->vs_bytes[zio->io_type]);
 		hrtime_t comp_start = gethrtime();
-		psize = zio_compress_data(*compress, zio->io_abd, dst, s_len);
+		psize = derp_compress_data(*compress, tmp, dst, s_len);
+		abd_return_buf(zio->io_abd, tmp, s_len);
 		hrtime_t comp_end = gethrtime();
 //		rvd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][zio_compress_to_derp_compress(*compress)][0] = comp_end-comp_start;
 //		dprintf("Hi there: 1: %u, 2: %u", rvd->vdev_stat_ex.vsx_derp_ac_model[0][0][0], rvd->vdev_stat_ex.vsx_derp_ac_model[1][0][0]);
 
-//		derp_update_model(pio, compress, comp_end-comp_start, zio->io_lsize, psize);
-		derp_update_model(rvd, compress, comp_end-comp_start, zio->io_lsize, psize);
+		if (training) {
+			derp_update_model(rvd, compress, comp_end-comp_start, zio->io_lsize, psize, bc_bucket);
+		}
 	}
 
 //	*compress = ZIO_COMPRESS_LZ4;
@@ -217,4 +393,40 @@ size_t derp_ac_compress(zio_t *zio, void *dst, size_t s_len, enum zio_compress *
 	return psize;
 
 //	return 0;
+}
+
+// This is a rewrite of the zio_compress_data function which allows us to not re-create a buf.
+size_t derp_compress_data(enum zio_compress c, void *src, void *dst, size_t s_len)
+{
+	size_t c_len, d_len;
+	zio_compress_info_t *ci = &zio_compress_table[c];
+
+	ASSERT((uint_t)c < ZIO_COMPRESS_FUNCTIONS);
+	ASSERT((uint_t)c == ZIO_COMPRESS_EMPTY || ci->ci_compress != NULL);
+
+	if (c == ZIO_COMPRESS_EMPTY)
+		return (s_len);
+
+	/* Compress at least 12.5% */
+	d_len = s_len - (s_len >> 3);
+
+	c_len = ci->ci_compress(src, dst, s_len, d_len, ci->ci_level);
+
+	if (c_len > d_len)
+		return (s_len);
+
+	ASSERT3U(c_len, <=, d_len);
+	return (c_len);
+}
+
+static int derp_zeroed_cb(void *data, size_t len, void *private)
+{
+	uint64_t *end = (uint64_t *)((char *)data + len);
+	uint64_t *word;
+
+	for (word = data; word < end; word++)
+		if (*word != 0)
+			return (1);
+
+	return (0);
 }

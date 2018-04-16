@@ -313,6 +313,10 @@ vdev_config_generate_stats(vdev_t *vd, nvlist_t *nv)
 			vsx->vsx_derp_disk_bps,
 			ARRAY_SIZE(vsx->vsx_derp_disk_bps));
 
+	fnvlist_add_uint64_array(nvx, ZPOOL_CONFIG_VDEV_DERP_TOTAL_BPS,
+			vsx->vsx_derp_total_bps,
+			ARRAY_SIZE(vsx->vsx_derp_total_bps));
+
 
 	/* Request sizes */
 	fnvlist_add_uint64_array(nvx, ZPOOL_CONFIG_VDEV_SYNC_IND_R_HISTO,

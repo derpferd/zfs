@@ -599,6 +599,7 @@ typedef struct zpool_rewind_policy {
 /* Derp Stats */
 #define ZPOOL_CONFIG_VDEV_DERP_MODEL		"vdev_derp_model"
 #define ZPOOL_CONFIG_VDEV_DERP_DISK_BPS		"vdev_derp_disk_bps"
+#define ZPOOL_CONFIG_VDEV_DERP_TOTAL_BPS	"vdev_derp_total_bps"
 
 /* Request size histograms */
 #define	ZPOOL_CONFIG_VDEV_SYNC_IND_R_HISTO	"vdev_sync_ind_r_histo"
@@ -945,9 +946,16 @@ typedef struct vdev_stat_ex {
 	    [VDEV_RQ_HISTO_BUCKETS];
 
 	uint64_t vsx_derp_ac_model[DERP_AC_BC_BUCKETS][DERP_AC_NUM_OF_COMP_ALGS][DERP_AC_NUM_LEARN_VALUES];
+//	uint64_t vsx_derp_ratio_model[DERP_AC_BC_BUCKETS][DERP_AC_NUM_OF_COMP_ALGS];
 	uint64_t vsx_derp_disk_bps[ZIO_TYPES];
+	uint64_t vsx_derp_total_bps[ZIO_TYPES];
 
 	uint64_t test;
+	uint64_t max_bps;
+	hrtime_t last_update;
+
+	uint64_t old_bytes;
+	hrtime_t old_timestamp;
 
 } vdev_stat_ex_t;
 
