@@ -956,6 +956,7 @@ typedef struct vdev_stat_ex {
 
 	uint64_t old_bytes;
 	hrtime_t old_timestamp;
+	uint64_t vsx_diskBps[ZIO_TYPES];
 
 } vdev_stat_ex_t;
 

@@ -118,6 +118,7 @@ zfs_prop_init(void)
 		{ "lz4",	ZIO_COMPRESS_LZ4 },
 		{ "derp-ac",ZIO_COMPRESS_DERP_AC},
 		{ "derp-ac-train",ZIO_COMPRESS_DERP_AC_TRAIN},
+		{ "auto",  ZIO_COMPRESS_AUTO },
 		{ NULL }
 	};
 
@@ -278,7 +279,7 @@ zfs_prop_init(void)
 	zprop_register_index(ZFS_PROP_COMPRESSION, "compression",
 	    ZIO_COMPRESS_DEFAULT, PROP_INHERIT,
 	    ZFS_TYPE_FILESYSTEM | ZFS_TYPE_VOLUME,
-	    "on | off | lzjb | gzip | gzip-[1-9] | zle | lz4 | derp-ac | derp-ac-train", "COMPRESS",
+	    "on | off | auto | lzjb | gzip | gzip-[1-9] | zle | lz4 | derp-ac | derp-ac-train", "COMPRESS",
 	    compress_table);
 	zprop_register_index(ZFS_PROP_SNAPDIR, "snapdir", ZFS_SNAPDIR_HIDDEN,
 	    PROP_INHERIT, ZFS_TYPE_FILESYSTEM,

@@ -76,6 +76,8 @@ derp_compress zio_compress_to_derp_compress(enum zio_compress compress) {
 			return -1;
 		case ZIO_COMPRESS_FUNCTIONS:
 			return -1;
+		case ZIO_COMPRESS_AUTO:
+			return -1;
 	}
 	return -1;
 }

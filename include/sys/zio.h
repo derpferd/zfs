@@ -39,6 +39,7 @@
 #include <sys/fs/zfs.h>
 #include <sys/zio_impl.h>
 #include <sys/derp_ac.h>
+#include <sys/compress_auto.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -469,6 +470,10 @@ struct zio {
 	uint64_t test;
 //	uint64_t vsx_derp_ac_model[DERP_AC_BC_BUCKETS][DERP_AC_NUM_OF_COMP_ALGS][DERP_AC_NUM_LEARN_VALUES];
 //	uint64_t vsx_derp_disk_bps[ZIO_TYPES];
+	uint8_t		io_compress_level; //stored in pio
+
+	boolean_t	io_compress_auto_exploring; //stored in pio
+	uint64_t	io_compress_auto_Bps[COMPRESS_AUTO_LEVELS];
 };
 
 extern int zio_bookmark_compare(const void *, const void *);

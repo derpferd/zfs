@@ -60,6 +60,7 @@ zio_compress_info_t zio_compress_table[ZIO_COMPRESS_FUNCTIONS] = {
 	{"lz4",			0,	lz4_compress_zfs, lz4_decompress_zfs},
 	{"derp-ac",		0,	NULL, 	NULL},
 	{"derp-ac-train",   0,	NULL, 	NULL},
+    {"auto", 0, NULL, NULL}
 };
 
 enum zio_compress

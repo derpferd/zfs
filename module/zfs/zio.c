@@ -44,6 +44,7 @@
 #include <sys/trace_zio.h>
 #include <sys/abd.h>
 #include <sys/derp_ac.h>
+#include <sys/compress_auto.h>
 
 /*
  * ==========================================================================
@@ -1348,7 +1349,9 @@ zio_write_compress(zio_t *zio)
 		// If AC is on compress it with the ac function.
 		if (compress == ZIO_COMPRESS_DERP_AC || compress == ZIO_COMPRESS_DERP_AC_TRAIN) {
 			psize = derp_ac_compress(zio, cbuf, lsize, &compress);
-		} else {
+		} else if (compress == ZIO_COMPRESS_AUTO) {
+            psize = compress_auto(zio, zio->io_abd, cbuf, lsize, &compress); 
+        } else {
 			psize = zio_compress_data(compress, zio->io_abd, cbuf, lsize);
 		}
 
