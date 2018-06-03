@@ -894,6 +894,19 @@ typedef struct vdev_stat {
 #define DERP_AC_NUM_OF_COMP_ALGS 3
 #define DERP_AC_NUM_LEARN_VALUES 2
 
+
+typedef struct derp_cpuload {
+	uint64_t 	last_total_time;
+	uint64_t 	last_idle_time;
+    uint64_t 	cur_total_time;
+    uint64_t 	cur_idle_time;
+    uint64_t	idle_time_diff;   // The current idle time diff calculated.
+    uint64_t	total_time_diff;
+    uint64_t	idle_percent;
+    hrtime_t	timestamp;
+} d_cpuload;
+
+
 /*
  * Extended stats
  *
@@ -957,6 +970,7 @@ typedef struct vdev_stat_ex {
 	uint64_t old_bytes;
 	hrtime_t old_timestamp;
 	uint64_t vsx_diskBps[ZIO_TYPES];
+	d_cpuload cpustats;
 
 } vdev_stat_ex_t;
 

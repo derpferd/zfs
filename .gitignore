@@ -57,3 +57,5 @@ cscope.*
 *.tar.gz
 *.patch
 *.orig
+
+*.ur-safe

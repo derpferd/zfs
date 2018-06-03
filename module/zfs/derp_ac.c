@@ -2,6 +2,7 @@
 #include <sys/spa_impl.h>
 #include <sys/vdev_impl.h>
 #include <sys/derp_bytecounter.h>
+//#include <linux/blkdev_compat.h>
 
 
 typedef uint64_t derp_compress;
@@ -74,12 +75,85 @@ derp_compress zio_compress_to_derp_compress(enum zio_compress compress) {
 			return -1;
 		case ZIO_COMPRESS_DERP_AC_TRAIN:
 			return -1;
-		case ZIO_COMPRESS_FUNCTIONS:
-			return -1;
 		case ZIO_COMPRESS_AUTO:
+			return -1;
+		case ZIO_COMPRESS_FUNCTIONS:
 			return -1;
 	}
 	return -1;
+}
+
+
+int derp_load_cur_stats(d_cpuload* stats) {
+//	int i;
+//	stats->last_idle_time = 80;
+//	stats->last_total_time = 100;
+//	stats->cur_idle_time = 100;
+//	stats->cur_total_time = 0;
+
+#ifdef _SPL_TIME_H
+	int i;
+
+//	stats->last_idle_time = 0;
+//	stats->last_total_time = 0;
+	stats->cur_idle_time = 0;
+	stats->cur_total_time = 0;
+
+//	stats->cur_idle_time = kcpustat_cpu(0).cpustat[CPUTIME_USER];
+//	stats->cur_total_time = get_idle_time(0);
+
+	for_each_possible_cpu(i) {
+		for (int j=0; j < NR_STATS; j++) {
+			stats->cur_total_time += kcpustat_cpu(0).cpustat[j];
+			if (j == CPUTIME_IDLE || j == CPUTIME_IOWAIT) {
+				stats->cur_idle_time += kcpustat_cpu(0).cpustat[j];
+			}
+		}
+//		stats->cur_idle_time = kcpustat_cpu(0).cpustat[CPUTIME_USER];
+//		stats->cur_total_time++;
+	}
+//	stats->cur_idle_time = CPUTIME_USER;
+//	get_cpu_idle_time_us(0, &stats->cur_total_time);
+#else
+	stats->cur_idle_time = 0;
+	stats->cur_total_time = 0;
+#endif
+
+    return 0;
+}
+
+int derp_update_cpuload(d_cpuload* stats) {
+	dprintf("Updating cpuload");
+    int err;
+    // Get cur times from /proc/stat
+    err = derp_load_cur_stats(stats);
+    if (err) return err;
+
+    // Calc diff
+    if (stats->last_total_time > stats->cur_total_time) {  // Time has moved on
+    	if (stats->last_idle_time >= stats->cur_idle_time ) {  // The idle time hasn't gone down.
+    		stats->idle_time_diff = stats->cur_idle_time - stats->last_idle_time;
+    	} else {
+    		dprintf("WARNING: This is very bad. The total idle time has gone down!!!");
+    	}
+    	stats->total_time_diff = stats->cur_total_time - stats->last_total_time;
+
+        // Set last to cur
+        stats->last_idle_time = stats->cur_idle_time;
+        stats->last_total_time = stats->cur_total_time;
+    } else if (stats->last_total_time == stats->cur_total_time) {
+    	dprintf("Not updating since nothing changed.");
+    } else {
+		dprintf("WARNING: This is very bad. We appear to have gone back in time!!!");
+    }
+
+    if (stats->total_time_diff != 0) {
+    	stats->idle_percent = (stats->idle_time_diff * 100) / stats->total_time_diff;
+    } else {
+    	stats->idle_percent = 0;
+    }
+
+    return 0;
 }
 
 void derp_add_to_rolling_ave(uint64_t new_value, uint64_t *ave, int n) {
@@ -148,6 +222,13 @@ vdev_stat_t* derp_get_vdev_stats(vdev_t *vd) {
 		return &vd->vdev_stat;
 	}
 	return derp_get_vdev_stats(vd->vdev_child[0]);
+}
+
+uint64_t get_queue_size(vdev_t *vd) {
+	if (!vd->vdev_children) {
+		return vd->vdev_queue.vq_class[ZIO_PRIORITY_ASYNC_WRITE].vqc_queued_size;
+	}
+	return get_queue_size(vd->vdev_child[0]);
 }
 
 void derp_update_vdev_stats(vdev_t *vd, uint64_t bc_bucket, uint64_t compress, uint64_t bps, uint64_t ratio) {
@@ -297,16 +378,41 @@ size_t derp_ac_compress(zio_t *zio, void *dst, size_t s_len, enum zio_compress *
 		if (abd_iterate_func(zio->io_abd, 0, s_len, derp_zeroed_cb, NULL) == 0)
 			return (0);
 
+		// Get stats
+		vdev_stat_ex_t* ex_stats = derp_get_vdev_ex_stats(rvd);
+
 //		psize = zio_compress_data(*compress, zio->io_abd, dst, s_len);
 		/* No compression algorithms can read from ABDs directly */
 		void *tmp = abd_borrow_buf_copy(zio->io_abd, s_len);
 		uint64_t bytecount = derp_bytecounter(tmp, s_len);  // TODO: make this read directly from the ABD.
 		uint64_t bc_bucket = derp_to_Q_type(bytecount);
 
-		dprintf("derp: bytecount: %u bucket: %u", bytecount, bc_bucket);
+		// Commented out the following to debug cpu_stat
+//		// Update cpu stats
+//		hrtime_t cpu_stat_update_interval = SECOND;
+//		if (ex_stats->cpustats.timestamp == 0) {  // Haven't set the stats yet.
+//			derp_update_cpuload(&ex_stats->cpustats);
+//			ex_stats->cpustats.timestamp = gethrtime();
+//		} else if (ex_stats->cpustats.timestamp + cpu_stat_update_interval < gethrtime()) {
+//			derp_update_cpuload(&ex_stats->cpustats);
+//			ex_stats->cpustats.timestamp = gethrtime();
+//		} else {
+//			// Skip, it is too soon to update.
+//			dprintf("CPU Stat skipping...");
+//		}
+
+		// Maybe this is what is breaking it???
+		uint64_t vd_queued_size_write = 0;
+//		uint64_t vd_queued_size_write = get_queue_size(rvd);
+
+		// TODO: get cpu usage:
+
+		dprintf("derp: bytecount: %u bucket: %u queue: %u", bytecount, bc_bucket, vd_queued_size_write);
+//		dprintf("derp: idle time %lu", ex_stats->cpustats.cur_idle_time);
+//		dprintf("derp: total time %lu", ex_stats->cpustats.cur_total_time);
+//		dprintf("derp: idle %lu%%", ex_stats->cpustats.idle_percent);
 		if (training) {
 			if (zio->io_type == ZIO_TYPE_WRITE) {
-				vdev_stat_ex_t* ex_stats = derp_get_vdev_ex_stats(rvd);
 //				vdev_stat_ex_t* ex_stats = kmem_alloc(sizeof(vdev_stat_ex_t), KM_SLEEP);// = derp_get_vdev_ex_stats(rvd);
 				vdev_stat_t* vs = kmem_alloc(sizeof(vdev_stat_t), KM_SLEEP);// = derp_get_vdev_stats(rvd);
 //				vdev_stat_t test_stats;
@@ -359,7 +465,7 @@ size_t derp_ac_compress(zio_t *zio, void *dst, size_t s_len, enum zio_compress *
 			dprintf("derp: picked rand %u", *compress);
 		} else {
 			dprintf("derp: Not Training");
-			*compress = derp_get_best_compress(derp_get_vdev_ex_stats(rvd), zio->io_type, bc_bucket);
+			*compress = derp_get_best_compress(ex_stats, zio->io_type, bc_bucket);
 			dprintf("derp: picked %u", *compress);
 		}
 //		dprintf("derp: bytes: %lu", derp_get_vdev_stats(rvd)->vs_bytes[zio->io_type]);
