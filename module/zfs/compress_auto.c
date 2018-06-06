@@ -69,6 +69,8 @@ uint64_t compress_vdev_queue_delay(uint64_t size, vdev_t *vd)
 {
 	uint64_t vd_writeBps = vd->vdev_stat_ex.vsx_diskBps[ZIO_TYPE_WRITE];
 
+	dprintf("n1lk: bps: %lu", vd_writeBps);
+
 	if (vd_writeBps == 0) {
 		return 0;
 	}
@@ -181,6 +183,8 @@ uint64_t compress_get_optimal_level(uint64_t lsize, vdev_t *rvd, zio_t *pio)
 	available_queue_delay = compress_min_queue_delay(lsize, rvd);
 	required_queue_delay = compress_calc_delay(lsize,
 		pio->io_compress_auto_Bps[level]);
+
+	dprintf("n1kl: available queue delay: %lu", available_queue_delay);
 
 
 	if ( required_queue_delay < available_queue_delay ) {

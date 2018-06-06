@@ -891,6 +891,7 @@ typedef struct vdev_stat {
 } vdev_stat_t;
 
 #define DERP_AC_BC_BUCKETS 5
+#define DERP_AC_CPU_BUCKETS 5
 #define DERP_AC_NUM_OF_COMP_ALGS 3
 #define DERP_AC_NUM_LEARN_VALUES 2
 
@@ -959,7 +960,8 @@ typedef struct vdev_stat_ex {
 	    [VDEV_RQ_HISTO_BUCKETS];
 
 	uint64_t vsx_derp_ac_model[DERP_AC_BC_BUCKETS][DERP_AC_NUM_OF_COMP_ALGS][DERP_AC_NUM_LEARN_VALUES];
-//	uint64_t vsx_derp_ratio_model[DERP_AC_BC_BUCKETS][DERP_AC_NUM_OF_COMP_ALGS];
+	uint64_t vsx_derp_ac_rate_model[DERP_AC_BC_BUCKETS][DERP_AC_CPU_BUCKETS][DERP_AC_NUM_OF_COMP_ALGS];
+	uint64_t vsx_derp_ac_ratio_model[DERP_AC_BC_BUCKETS][DERP_AC_NUM_OF_COMP_ALGS];
 	uint64_t vsx_derp_disk_bps[ZIO_TYPES];
 	uint64_t vsx_derp_total_bps[ZIO_TYPES];
 

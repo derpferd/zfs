@@ -3140,6 +3140,7 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 			}
 
 			if (zio->io_delta && zio->io_delay) {
+				dprintf("Updating stats... %lu, %lu", vs->vs_timestamp, vs->vs_bytes[ZIO_TYPE_WRITE]);
 				// Update rolling average bps over 1000 ops.
 				derp_add_to_rolling_ave(derp_calc_bps(psize, zio->io_delay),
 						&vsx->vsx_derp_disk_bps[type],
@@ -3147,6 +3148,7 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 				derp_add_to_rolling_ave(derp_calc_bps(psize, zio->io_delta),
 						&vsx->vsx_derp_total_bps[type],
 						1000);
+
 				int n = 1000; // average over 1000 zios
 
 				uint64_t bps = compress_calc_Bps(

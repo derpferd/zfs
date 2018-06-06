@@ -9,6 +9,11 @@ typedef uint64_t derp_compress;
 
 #define derp_for_each_compress(derp_c) \
     for(derp_c = 0; derp_c < DERP_AC_NUM_OF_COMP_ALGS; derp_c++)
+#define derp_max(a, b) \
+	(a > b ? a : b)
+
+#define cpu_stat_update_interval (SECOND/10)
+#define bps_measuring_interval SECOND
 
 enum zio_compress derp_compress_funcs[DERP_AC_NUM_OF_COMP_ALGS] = {
 		ZIO_COMPRESS_EMPTY,
@@ -21,13 +26,15 @@ static int derp_zeroed_cb(void *data, size_t len, void *private);
 
 typedef struct bps_variables {
 	uint64_t bc_bucket;
+	uint64_t cpu_bucket;
 	derp_compress compress;
-//	TODO: add other variables like cpu usage.
+	uint64_t bps;
 } derp_bps_variables_t;
 
 typedef struct ratio_variables {
 	uint64_t bc_bucket;
 	derp_compress compress;
+	uint64_t ratio;
 } derp_ratio_variables_t;
 
 // Taken from: https://en.wikipedia.org/wiki/Linear-feedback_shift_register.
@@ -92,6 +99,7 @@ int derp_load_cur_stats(d_cpuload* stats) {
 //	stats->cur_total_time = 0;
 
 #ifdef _SPL_TIME_H
+	dprintf("cpu: good");
 	int i;
 
 //	stats->last_idle_time = 0;
@@ -115,9 +123,24 @@ int derp_load_cur_stats(d_cpuload* stats) {
 //	stats->cur_idle_time = CPUTIME_USER;
 //	get_cpu_idle_time_us(0, &stats->cur_total_time);
 #else
+	dprintf("cpu: bad");
 	stats->cur_idle_time = 0;
 	stats->cur_total_time = 0;
 #endif
+
+    return 0;
+}
+
+int derp_first_cpuload(d_cpuload* stats) {
+	dprintf("Setting up cpuload");
+    int err;
+    // Get cur times from /proc/stat
+    err = derp_load_cur_stats(stats);
+    if (err) return err;
+
+    // Set last to cur
+    stats->last_idle_time = stats->cur_idle_time;
+    stats->last_total_time = stats->cur_total_time;
 
     return 0;
 }
@@ -130,11 +153,12 @@ int derp_update_cpuload(d_cpuload* stats) {
     if (err) return err;
 
     // Calc diff
-    if (stats->last_total_time > stats->cur_total_time) {  // Time has moved on
-    	if (stats->last_idle_time >= stats->cur_idle_time ) {  // The idle time hasn't gone down.
+    if (stats->last_total_time < stats->cur_total_time) {  // Time has moved on
+    	if (stats->last_idle_time <= stats->cur_idle_time ) {  // The idle time hasn't gone down.
     		stats->idle_time_diff = stats->cur_idle_time - stats->last_idle_time;
     	} else {
     		dprintf("WARNING: This is very bad. The total idle time has gone down!!!");
+    		return 0;
     	}
     	stats->total_time_diff = stats->cur_total_time - stats->last_total_time;
 
@@ -145,6 +169,12 @@ int derp_update_cpuload(d_cpuload* stats) {
     	dprintf("Not updating since nothing changed.");
     } else {
 		dprintf("WARNING: This is very bad. We appear to have gone back in time!!!");
+		dprintf("Last: %lu Cur: %lu", stats->last_total_time, stats->cur_total_time);
+
+        // Set last to cur in hopes that this will reset the stat so they can be used next time.
+        stats->last_idle_time = stats->cur_idle_time;
+        stats->last_total_time = stats->cur_total_time;
+        return 0;
     }
 
     if (stats->total_time_diff != 0) {
@@ -191,13 +221,13 @@ uint64_t derp_apply_compress_ratio(uint64_t bytes, uint64_t ratio) {
 }
 
 uint64_t* derp_get_bps(vdev_stat_ex_t *stats, derp_bps_variables_t *vars) {
-	dprintf("derp: getting element[%u][%u][%u]", vars->bc_bucket, vars->compress, DERP_COMPRESS_RATE_INDEX);
-	return &stats->vsx_derp_ac_model[vars->bc_bucket][vars->compress][DERP_COMPRESS_RATE_INDEX];
+	dprintf("derp: getting bps element[%u][%u][%u]", vars->bc_bucket, vars->cpu_bucket, vars->compress);
+	return &stats->vsx_derp_ac_rate_model[vars->bc_bucket][vars->compress][vars->cpu_bucket];
 }
 
 uint64_t* derp_get_ratio(vdev_stat_ex_t *stats, derp_ratio_variables_t *vars) {
-	dprintf("derp: getting element[%u][%u][%u]", vars->bc_bucket, vars->compress, DERP_COMPRESS_RATIO_INDEX);
-	return &stats->vsx_derp_ac_model[vars->bc_bucket][vars->compress][DERP_COMPRESS_RATIO_INDEX];
+	dprintf("derp: getting ratio element[%u][%u]", vars->bc_bucket, vars->compress);
+	return &stats->vsx_derp_ac_ratio_model[vars->bc_bucket][vars->compress];
 }
 
 void derp_set_default_compress(enum zio_compress *compress) {
@@ -231,44 +261,51 @@ uint64_t get_queue_size(vdev_t *vd) {
 	return get_queue_size(vd->vdev_child[0]);
 }
 
-void derp_update_vdev_stats(vdev_t *vd, uint64_t bc_bucket, uint64_t compress, uint64_t bps, uint64_t ratio) {
-//	uint64_t min_delay = 0;
+uint64_t get_queue_time(vdev_t *vd, uint64_t disk_bps) {
+	if (!vd->vdev_children) {
+		uint64_t size = vd->vdev_queue.vq_class[ZIO_PRIORITY_ASYNC_WRITE].vqc_queued_size;
+		return derp_calc_time_from_bps(disk_bps, size);
+	}
+	return get_queue_time(vd->vdev_child[0], disk_bps);
+}
 
-	if (!vd->vdev_children) { // is leaf
-		dprintf("derp: vd:%u updating element[%u][%u][%u] with value %u", vd->vdev_id, bc_bucket, compress, DERP_COMPRESS_RATE_INDEX, bps);
-		derp_add_to_rolling_ave(bps,
-				&vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][DERP_COMPRESS_RATE_INDEX],
+void derp_update_vdev_stats(vdev_t *vd, derp_bps_variables_t* bps_vars, derp_ratio_variables_t* ratio_vars) {
+	if (!vd->vdev_children) { // is this the leaf?
+
+		// Old style
+		derp_add_to_rolling_ave(bps_vars->bps,
+				&vd->vdev_stat_ex.vsx_derp_ac_model[bps_vars->bc_bucket][bps_vars->compress][DERP_COMPRESS_RATE_INDEX],
 				1000);
-		dprintf("derp: updated to %u", vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][DERP_COMPRESS_RATE_INDEX]);
-		dprintf("derp: vd:%u updating element[%u][%u][%u] with value %u", vd->vdev_id, bc_bucket, compress, DERP_COMPRESS_RATIO_INDEX, bps);
-		derp_add_to_rolling_ave(ratio,
-				&vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][DERP_COMPRESS_RATIO_INDEX],
+		derp_add_to_rolling_ave(ratio_vars->ratio,
+				&vd->vdev_stat_ex.vsx_derp_ac_model[ratio_vars->bc_bucket][ratio_vars->compress][DERP_COMPRESS_RATIO_INDEX],
 				1000);
-		dprintf("derp: updated to %u", vd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][compress][DERP_COMPRESS_RATIO_INDEX]);
-//		compress_vdev_queue_delay(size, vd);
+
+		// New style
+		if (bps_vars) {
+			dprintf("derp: vd:%u updating rate model[%u][%u][%u] with bps %u", vd->vdev_id, bps_vars->bc_bucket, bps_vars->cpu_bucket, bps_vars->compress, bps_vars->bps);
+			derp_add_to_rolling_ave(bps_vars->bps,
+					&vd->vdev_stat_ex.vsx_derp_ac_rate_model[bps_vars->bc_bucket][bps_vars->cpu_bucket][bps_vars->compress],
+					1000);
+			dprintf("derp: new value %lu", vd->vdev_stat_ex.vsx_derp_ac_rate_model[bps_vars->bc_bucket][bps_vars->cpu_bucket][bps_vars->compress]);
+		}
+		if (ratio_vars) {
+			dprintf("derp: vd:%u updating ratio model[%u][%u] with ratio %u", vd->vdev_id, ratio_vars->bc_bucket, ratio_vars->compress, ratio_vars->ratio);
+			derp_add_to_rolling_ave(ratio_vars->ratio,
+					&vd->vdev_stat_ex.vsx_derp_ac_ratio_model[ratio_vars->bc_bucket][ratio_vars->compress],
+					1000);
+			dprintf("derp: new value %lu", vd->vdev_stat_ex.vsx_derp_ac_ratio_model[ratio_vars->bc_bucket][ratio_vars->compress]);
+		}
 	} else {
 		int i;
 		for (i = 0; i < vd->vdev_children; i++) {
-			derp_update_vdev_stats(vd->vdev_child[i], bc_bucket, compress, bps, ratio);
-//			if (vdev_delay) {
-//				if (min_delay == 0) {
-//					min_delay = vdev_delay;
-//				} else if (vdev_delay < min_delay) {
-//					min_delay = vdev_delay;
-//				}
-//			}
+			derp_update_vdev_stats(vd->vdev_child[i], bps_vars, ratio_vars);
 		}
 	}
-//	return (min_delay);
 }
 
-void derp_update_model(vdev_t *rvd, enum zio_compress *compress, hrtime_t compress_delay, uint64_t lsize, uint64_t psize, uint64_t bc_bucket) {
-//void derp_update_model(zio_t *pio, enum zio_compress *compress, hrtime_t compress_delay, uint64_t lsize, uint64_t psize) {
-	if (compress_delay == 0 || lsize == 0 || psize == 0) return;
-	uint64_t derp_compress = zio_compress_to_derp_compress(*compress);
-	uint64_t bps = derp_calc_bps(lsize, compress_delay);
-	uint64_t ratio = derp_calc_compress_ratio(lsize, psize);
-	derp_update_vdev_stats(rvd, bc_bucket, derp_compress, bps, ratio);
+void derp_update_model(vdev_t *rvd, derp_bps_variables_t* bps_vars, derp_ratio_variables_t* ratio_vars) {
+	// A wrapper for the recursive function `derp_update_vdev_stats`
+	derp_update_vdev_stats(rvd, bps_vars, ratio_vars);
 }
 
 enum zio_compress derp_rand_compress(void) {
@@ -277,7 +314,7 @@ enum zio_compress derp_rand_compress(void) {
 //	return ZIO_COMPRESS_EMPTY;
 }
 
-enum zio_compress derp_get_best_compress(vdev_stat_ex_t *stats, enum zio_type type, uint64_t bc_bucket) {
+enum zio_compress derp_get_best_compress(vdev_t *rvd, uint64_t lsize, derp_bps_variables_t* bps_vars, derp_ratio_variables_t* ratio_vars) {
 	/*
 	 * How to get the best compression alg.
 	 * Find the compression alg. that maximizes Total Write Rate (TWR).
@@ -285,52 +322,129 @@ enum zio_compress derp_get_best_compress(vdev_stat_ex_t *stats, enum zio_type ty
 	 *  TWT = CR(Compression time) + (DR(Current Disk Rate)*CRatio(Compression Ratio)
 	 *
 	 */
-	dprintf("Yo Dog 1");
+//	dprintf("Yo Dog 1");
 	enum zio_compress c;
 	derp_compress derp_c;
-	derp_bps_variables_t bps_vars;
-	derp_ratio_variables_t ratio_vars;
+	vdev_stat_ex_t *stats = derp_get_vdev_ex_stats(rvd);
+//	derp_bps_variables_t bps_vars;
+//	derp_ratio_variables_t ratio_vars;
 //	uint64_t cur_bps = stats->vsx_derp_disk_bps[type];
 //	uint64_t cur_total_bps = stats->vsx_derp_total_bps[type];
 //	cur_total_bps = stats->max_bps;
 	uint64_t max_disk_bps = stats->max_bps;
 
-	bps_vars.bc_bucket = bc_bucket;
-	ratio_vars.bc_bucket = bc_bucket;
+//	bps_vars.bc_bucket = bc_bucket;
+//	ratio_vars.bc_bucket = bc_bucket;
 
-	uint64_t max_twr = 0;
+//	uint64_t max_twr = 0;
+	uint64_t min_total_write_time = 0xFFFFFFFFFFFFFFFF;
+
+	uint64_t queue_time = get_queue_time(rvd, max_disk_bps);
+
 	enum zio_compress best_c = ZIO_COMPRESS_EMPTY; // Default to no compression
+	derp_set_default_compress(&best_c);
 	dprintf("Picking best...");
-	dprintf("\tMax Disk BPS: %lu \tBucket: %u", max_disk_bps, bc_bucket);
+	dprintf("\tMax Disk BPS: %lu", max_disk_bps);
 	derp_for_each_compress(derp_c) {
 		c = derp_compress_funcs[derp_c];
-		bps_vars.compress = derp_c;
-		ratio_vars.compress = derp_c;
+		bps_vars->compress = derp_c;
+		ratio_vars->compress = derp_c;
 
-		uint64_t c_rate = *derp_get_bps(stats, &bps_vars);
-		uint64_t c_ratio = *derp_get_ratio(stats, &ratio_vars);
+		uint64_t c_rate = *derp_get_bps(stats, bps_vars);
+		uint64_t c_ratio = *derp_get_ratio(stats, ratio_vars);
 
-		uint64_t twr;
-//		uint64_t MAX_RATE = (uint64_t)BYTES_FACTOR * 10;
-//		MAX_RATE = MAX_RATE *10;
-		if (c_rate > MAX_RATE) {
-			twr = derp_apply_compress_ratio(max_disk_bps, c_ratio);
+		uint64_t compress_time;
+		if (c_rate > MAX_RATE) {  // Basically the compression rate is so quick that it doesn't have any influence. E.g. No compression.
+			compress_time = 0;
 		} else {
-			twr = (max_disk_bps*c_rate) / (max_disk_bps + (derp_apply_compress_ratio(c_rate, c_ratio)));
+			compress_time = derp_calc_time_from_bps(c_rate, lsize);
 		}
-		dprintf("derp:\tc: %s  \trate:%lu   \tratio:%lu  \ttwr:%lu rate: %lu", (&zio_compress_table[c])->ci_name, c_rate, c_ratio, twr, derp_apply_compress_ratio(c_rate, c_ratio));
+
+		uint64_t pre_write_time = derp_max(compress_time-queue_time, queue_time);  // = max(compress_time-queue_time, queue_time)
+		uint64_t estimated_after_compression_bytes = derp_apply_compress_ratio(lsize, c_ratio);
+		uint64_t disk_write_time = derp_calc_time_from_bps(max_disk_bps, estimated_after_compression_bytes);
+		uint64_t total_write_time = pre_write_time + disk_write_time;
+
+		if (total_write_time < min_total_write_time) {
+			min_total_write_time = total_write_time;
+			best_c = c;
+		}
+//		uint64_t queue_time = 0;
+
+//		uint64_t twr;
+//		if (c_rate > MAX_RATE) {  // Basically the compression rate is so quick that it doesn't have any influnce. E.g. No compression.
+//			twr = derp_apply_compress_ratio(max_disk_bps, c_ratio);
+//		} else {
+//			twr = (max_disk_bps*c_rate) / (max_disk_bps + (derp_apply_compress_ratio(c_rate, c_ratio)));
+//		}
+//		dprintf("derp:\tc: %s  \trate:%lu   \tratio:%lu  \ttwr:%lu rate: %lu", (&zio_compress_table[c])->ci_name, c_rate, c_ratio, twr, derp_apply_compress_ratio(c_rate, c_ratio));
 //		dprintf("derp:　　　　c: %s c_ratio: %u X: %u Y:%u", (&zio_compress_table[c])->ci_name, c_ratio, c_rate*c_ratio, (c_rate*c_ratio)/BYTES_FACTOR);
 //		dprintf("derp:　　　　c: %s twr: %u = (%u*%u) / (%u + %u)", (&zio_compress_table[c])->ci_name, twr, cur_bps, c_rate, cur_bps, derp_apply_compress_ratio(c_rate, c_ratio));
 //		dprintf("derp:　　　　c: %s twr: %u = (%u) / (%u)", (&zio_compress_table[c])->ci_name, twr, cur_bps*c_rate, cur_bps+derp_apply_compress_ratio(c_rate, c_ratio));
-		if (twr == 0) {
-			return c;
-		}
-		if (twr > max_twr) {
-			max_twr = twr;
-			best_c = c;
-		}
+//		if (twr == 0) {  // We don't know anything about this alg's speed, so let's try it out.
+//			return c;
+//		}
+//		total_delay = lsize / twr;
+//		total_delay =
+//		if (twr > max_twr) {
+//			max_twr = twr;
+//			best_c = c;
+//		}
 	}
+
+	// TODO: set real value
+	bps_vars->compress = -1;
+	ratio_vars->compress = -1;
 	return best_c;
+}
+
+void update_bps(vdev_stat_ex_t* ex_stats, vdev_stat_t* vs) {
+	hrtime_t cur_timestamp = gethrtime();
+
+	if (ex_stats->old_timestamp == 0) {
+		ex_stats->old_timestamp = cur_timestamp;
+		ex_stats->old_bytes = vs->vs_bytes[ZIO_TYPE_WRITE];
+		dprintf("derp: Setting up bps counter");
+	} else if (ex_stats->old_timestamp + bps_measuring_interval < cur_timestamp) {
+		uint64_t tmp_bytes = vs->vs_bytes[ZIO_TYPE_WRITE] - ex_stats->old_bytes;
+		uint64_t tdelta = cur_timestamp - ex_stats->old_timestamp;
+		uint64_t bps = derp_calc_bps(tmp_bytes, tdelta);
+		dprintf("derp: bps: %lu. tmp_bytes: %lu in %lu ns", bps, tmp_bytes, tdelta);
+		if (bps > ex_stats->max_bps) {
+			ex_stats->max_bps = bps;
+			dprintf("derp new max bps: %lu", bps);
+		}
+		ex_stats->old_timestamp = cur_timestamp;
+		ex_stats->old_bytes = vs->vs_bytes[ZIO_TYPE_WRITE];
+	} else {
+//		dprintf("derp: skipping bps recalc. old: %lu cur: %lu", ex_stats->old_timestamp, cur_timestamp);
+	}
+}
+
+void update_cpu(vdev_stat_ex_t* ex_stats) {
+	// Update cpu stats
+	if (ex_stats->cpustats.timestamp == 0) {  // Haven't set the stats yet.
+		derp_first_cpuload(&ex_stats->cpustats);  // TODO: error checking here
+		ex_stats->cpustats.timestamp = gethrtime();
+	} else if (ex_stats->cpustats.timestamp + cpu_stat_update_interval < gethrtime()) {
+		derp_update_cpuload(&ex_stats->cpustats);  // TODO: error checking here
+		ex_stats->cpustats.timestamp = gethrtime();
+	} else {
+	  // Skip, it is too soon to update.
+	//      dprintf("CPU Stat skipping...");
+	}
+}
+
+uint64_t derp_idle_cpu_percent_to_bucket(uint64_t idle_cpu) {
+    if (idle_cpu == 0) {
+        return 3;
+    } else if (idle_cpu < 33) {
+		return 2;
+	} else if (idle_cpu < 66) {
+		return 1;
+	} else {
+		return 0;
+	}
 }
 
 size_t derp_ac_compress(zio_t *zio, void *dst, size_t s_len, enum zio_compress *compress) {
@@ -339,23 +453,6 @@ size_t derp_ac_compress(zio_t *zio, void *dst, size_t s_len, enum zio_compress *
 	 * 	compress:	This is needed so we can change the compression algorithm used which is  set by the calling function.
 	 * */
 	// If we want to die early and do no compression simply return 0.
-
-	// Get the io device which contains the ac info.
-//	zio_t* pio = zio_unique_parent(zio);
-
-//	spa_t *spa = zio->io_spa;
-//	vdev_t *rvd = spa->spa_root_vdev;
-//	vdev_t *vd = zio->io_vd ? zio->io_vd : rvd;
-
-////	vdev_t *pvd;
-////	uint64_t txg = zio->io_txg;
-////	vdev_stat_t *vs = &vd->vdev_stat;
-//	vdev_stat_ex_t *vsx = &vd->vdev_stat_ex;
-////	zio_type_t type = zio->io_type;
-
-	// Decide compress here
-//	uint64_t bc_bucket = 0;
-//	derp_test();
 
 	size_t psize;
 	vdev_t *rvd = zio->io_spa->spa_root_vdev;
@@ -370,7 +467,6 @@ size_t derp_ac_compress(zio_t *zio, void *dst, size_t s_len, enum zio_compress *
 	if (pio == NULL) {
 		psize = zio_compress_data(*compress, zio->io_abd, dst, s_len);
 	} else {
-
 		/*
 		 * If the data is all zeroes, we don't even need to allocate
 		 * a block for it.  We indicate this by returning zero size.
@@ -378,129 +474,73 @@ size_t derp_ac_compress(zio_t *zio, void *dst, size_t s_len, enum zio_compress *
 		if (abd_iterate_func(zio->io_abd, 0, s_len, derp_zeroed_cb, NULL) == 0)
 			return (0);
 
-		// Get stats
+		// Get ex stats
 		vdev_stat_ex_t* ex_stats = derp_get_vdev_ex_stats(rvd);
+		update_cpu(ex_stats);
 
-//		psize = zio_compress_data(*compress, zio->io_abd, dst, s_len);
 		/* No compression algorithms can read from ABDs directly */
 		void *tmp = abd_borrow_buf_copy(zio->io_abd, s_len);
+
 		uint64_t bytecount = derp_bytecounter(tmp, s_len);  // TODO: make this read directly from the ABD.
+		uint64_t cpu_idle_percent = ex_stats->cpustats.idle_percent;
+
 		uint64_t bc_bucket = derp_to_Q_type(bytecount);
+		uint64_t cpu_bucket = derp_idle_cpu_percent_to_bucket(cpu_idle_percent);
+		uint64_t vd_queued_size_write = get_queue_size(rvd);
 
-		// Commented out the following to debug cpu_stat
-//		// Update cpu stats
-//		hrtime_t cpu_stat_update_interval = SECOND;
-//		if (ex_stats->cpustats.timestamp == 0) {  // Haven't set the stats yet.
-//			derp_update_cpuload(&ex_stats->cpustats);
-//			ex_stats->cpustats.timestamp = gethrtime();
-//		} else if (ex_stats->cpustats.timestamp + cpu_stat_update_interval < gethrtime()) {
-//			derp_update_cpuload(&ex_stats->cpustats);
-//			ex_stats->cpustats.timestamp = gethrtime();
-//		} else {
-//			// Skip, it is too soon to update.
-//			dprintf("CPU Stat skipping...");
-//		}
+		derp_bps_variables_t bps_vars;
+		derp_ratio_variables_t ratio_vars;
 
-		// Maybe this is what is breaking it???
-		uint64_t vd_queued_size_write = 0;
-//		uint64_t vd_queued_size_write = get_queue_size(rvd);
+		bps_vars.bc_bucket = bc_bucket;
+		bps_vars.cpu_bucket = cpu_bucket;
+		bps_vars.compress = -1; // if training {Fill this out when we know it} else {this will be set to the best alg}
 
-		// TODO: get cpu usage:
+		ratio_vars.bc_bucket = bc_bucket;
+		ratio_vars.compress = -1;
 
-		dprintf("derp: bytecount: %u bucket: %u queue: %u", bytecount, bc_bucket, vd_queued_size_write);
-//		dprintf("derp: idle time %lu", ex_stats->cpustats.cur_idle_time);
-//		dprintf("derp: total time %lu", ex_stats->cpustats.cur_total_time);
-//		dprintf("derp: idle %lu%%", ex_stats->cpustats.idle_percent);
+		// Debug print all inputs
+		dprintf("derp: bytecount: %u bucket: %u cpu: %u bucket: %u queue: %u lsize: %u", bytecount, bc_bucket, cpu_idle_percent, cpu_bucket, vd_queued_size_write, zio->io_lsize);
+
+
 		if (training) {
+			dprintf("derp: Training");
 			if (zio->io_type == ZIO_TYPE_WRITE) {
-//				vdev_stat_ex_t* ex_stats = kmem_alloc(sizeof(vdev_stat_ex_t), KM_SLEEP);// = derp_get_vdev_ex_stats(rvd);
-				vdev_stat_t* vs = kmem_alloc(sizeof(vdev_stat_t), KM_SLEEP);// = derp_get_vdev_stats(rvd);
-//				vdev_stat_t test_stats;
-				vdev_get_stats(rvd, vs);
-				hrtime_t measuring_interval = SECOND;
-				//measuring_interval = measuring_interval;
-//				if (ex_stats->last_update == 0) {
-//					ex_stats->last_update = gethrtime();
-//					ex_stats->test = vs->vs_bytes[zio->io_type]
-//				} else
-				if (ex_stats->old_timestamp == 0) {
-					ex_stats->old_timestamp = vs->vs_timestamp;
-					ex_stats->old_bytes = vs->vs_bytes[ZIO_TYPE_WRITE];
-//					ex_stats->test = vs->vs_bytes[zio->io_type];
-					dprintf("derp: Setting up bps counter");
-				} else
-				if (ex_stats->old_timestamp + measuring_interval < vs->vs_timestamp) {
-					uint64_t tmp_bytes = vs->vs_bytes[ZIO_TYPE_WRITE] - ex_stats->old_bytes;
-					uint64_t tdelta = vs->vs_timestamp - ex_stats->old_timestamp;
-					uint64_t bps = derp_calc_bps(tmp_bytes, tdelta);
-//					double scale = (double)SECOND / tdelta;
-//					uint64_t tmp_bytes = vs->vs_bytes[zio->io_type];
-//					hrtime_t tmp_time = gethrtime();
-//					dprintf("derp: temp_max_bps: %lu. %lu bytes in %lu ns", derp_calc_bps(tmp_bytes-ex_stats->test, tmp_time-ex_stats->last_update), tmp_bytes-ex_stats->test, tmp_time-ex_stats->last_update);
-					dprintf("derp: bps: %lu. tmp_bytes: %lu in %lu ns", bps, tmp_bytes, tdelta);
-//					tmp_bytes = derp_calc_bps(tmp_bytes-ex_stats->test, tmp_time-ex_stats->last_update);
-					if (bps > ex_stats->max_bps) {
-						ex_stats->max_bps = bps;
-					}
-					ex_stats->old_timestamp = vs->vs_timestamp;
-					ex_stats->old_bytes = vs->vs_bytes[ZIO_TYPE_WRITE];
-//					ex_stats->last_update = tmp_time;
-//					ex_stats->test = tmp_bytes;
-//					dprintf("derp: updated max_bps: %lu", ex_stats->max_bps);
-				} else {
-//					dprintf("derp: waiting old: %lld new: %lld cur: %lld", ex_stats->old_timestamp, vs->vs_timestamp, gethrtime());
-//					dprintf("derp: waiting (%lu + %lu) - %lu more nanosecs", stats->last_update, SECOND, gethrtime());
-	//				dprintf("derp: max_bps: %lu", stats->max_bps);
-//					dprintf("derp: .");
-//					dprintf("derp: test %lld", test_stats.vs_timestamp);
-//					dprintf("derp: bytes %lld", test_stats.vs_bytes[ZIO_TYPE_WRITE]);
-				}
-
-				kmem_free(vs, sizeof(vdev_stat_t));
+				update_bps(ex_stats, derp_get_vdev_stats(rvd));
 			} else {
 				dprintf("derp: warning!!!! Training but zio type isn't write.");
 			}
-			dprintf("derp: Training");
+
 			*compress = derp_rand_compress();
-			dprintf("derp: picked rand %u", *compress);
 		} else {
 			dprintf("derp: Not Training");
-			*compress = derp_get_best_compress(ex_stats, zio->io_type, bc_bucket);
-			dprintf("derp: picked %u", *compress);
+			*compress = derp_get_best_compress(rvd, zio->io_lsize, &bps_vars, &ratio_vars);
 		}
-//		dprintf("derp: bytes: %lu", derp_get_vdev_stats(rvd)->vs_bytes[zio->io_type]);
+
+		dprintf("derp: picked %u", *compress);
+		bps_vars.compress = zio_compress_to_derp_compress(*compress);
+		ratio_vars.compress = bps_vars.compress;
+
 		hrtime_t comp_start = gethrtime();
 		psize = derp_compress_data(*compress, tmp, dst, s_len);
 		abd_return_buf(zio->io_abd, tmp, s_len);
 		hrtime_t comp_end = gethrtime();
-//		rvd->vdev_stat_ex.vsx_derp_ac_model[bc_bucket][zio_compress_to_derp_compress(*compress)][0] = comp_end-comp_start;
-//		dprintf("Hi there: 1: %u, 2: %u", rvd->vdev_stat_ex.vsx_derp_ac_model[0][0][0], rvd->vdev_stat_ex.vsx_derp_ac_model[1][0][0]);
 
-		if (training) {
-			derp_update_model(rvd, compress, comp_end-comp_start, zio->io_lsize, psize, bc_bucket);
+		if (training || DERP_ONLINE) {
+			hrtime_t compress_delay = comp_end-comp_start;
+			if (compress_delay > 0 && zio->io_lsize > 0 && psize > 0) {  // This makes sure we will not do any division by 0
+				// Update structs with the values seen.
+				bps_vars.bps = derp_calc_bps(zio->io_lsize, compress_delay);
+				ratio_vars.ratio = derp_calc_compress_ratio(zio->io_lsize, psize);
+
+				derp_update_model(rvd, &bps_vars, &ratio_vars);
+			} else {
+				dprintf("derp: warning!!!!! not updating stats since we would have a division by zero.");
+				dprintf("derp: comp_delay: %lu lsize: %lu psize: %lu", compress_delay, zio->io_lsize, psize);
+			}
 		}
 	}
 
-//	*compress = ZIO_COMPRESS_LZ4;
-
-//	hrtime_t comp_start = gethrtime();
-//	hrtime_t comp_end = gethrtime();
-
-//	vsx->vsx_derp_ac_model[bc_bucket][(uint64_t)compress][COMPRESS_RATE_INDEX] = comp_end-comp_start;
-
-//	uint64_t compression_bps = derp_calc_bps(s_len, comp_end-comp_start);
-//	uint64_t compression_ratio = derp_calc_compress_ratio(s_len, psize);
-//
-//	derp_add_to_rolling_ave(compression_bps,
-//			&vsx->vsx_derp_ac_model[bc_bucket][(uint64_t)compress][COMPRESS_RATE_INDEX],
-//			1000);
-//	derp_add_to_rolling_ave(compression_ratio,
-//			&vsx->vsx_derp_ac_model[bc_bucket][(uint64_t)compress][COMPRESS_RATIO_INDEX],
-//			1000);
-
 	return psize;
-
-//	return 0;
 }
 
 // This is a rewrite of the zio_compress_data function which allows us to not re-create a buf.
@@ -538,3 +578,4 @@ static int derp_zeroed_cb(void *data, size_t len, void *private)
 
 	return (0);
 }
+

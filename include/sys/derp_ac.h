@@ -20,6 +20,7 @@ void derp_add_to_rolling_ave(uint64_t new_value, uint64_t *ave, int n);
 #define BYTES_FACTOR (1000*1000*1000)
 #define MAX_RATE ((uint64_t)(1000*1000*1000)*10)
 #define SECOND (1000*1000*1000)
+#define DERP_ONLINE 0  // Make this a 1 if you would like the model to be updated online.
 //*1000
 uint64_t derp_calc_bps(uint64_t bytes, hrtime_t time);
 uint64_t derp_calc_time_from_bps(uint64_t bps, uint64_t bytes);
