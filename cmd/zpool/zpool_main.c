@@ -3624,15 +3624,21 @@ print_derp_stat(iostat_cbdata_t *cb, nvlist_t *oldnv,
 //	uint64_t val;
 	const char *names[] = {
 		ZPOOL_CONFIG_VDEV_DERP_MODEL,
+		ZPOOL_CONFIG_VDEV_DERP_RATE_MODEL,
+		ZPOOL_CONFIG_VDEV_DERP_RATIO_MODEL,
 	};
 	struct stat_array *nva;
 	struct stat_array *derp_model;
+	struct stat_array *derp_rate_model;
+	struct stat_array *derp_ratio_model;
 
 //	unsigned int column_width = 5;//default_column_width(cb, IOS_LATENCY);
 //	enum zfs_nicenum_format format;
 
 	nva = calc_and_alloc_stats_ex(names, ARRAY_SIZE(names), oldnv, newnv);
 	derp_model = &nva[0];
+	derp_rate_model = &nva[1];
+	derp_ratio_model = &nva[2];
 
 //	if (cb->cb_literal)
 //		format = ZFS_NICENUM_RAWTIME;
@@ -3645,9 +3651,29 @@ print_derp_stat(iostat_cbdata_t *cb, nvlist_t *oldnv,
 			printf(", ");
 		}
 		printf("%lu", derp_model->data[i]);
-//		printf("Num: %lu\n", derp_model->data[i]);
 	}
 	printf("]\n");
+
+
+	printf("Rate Model Dims: %ux%ux%u\n[", DERP_AC_BC_BUCKETS, DERP_AC_CPU_BUCKETS, DERP_AC_NUM_OF_COMP_ALGS);
+	for (i = 0; i < derp_rate_model->count; i++) {
+		if (i != 0) {
+			printf(", ");
+		}
+		printf("%lu", derp_rate_model->data[i]);
+	}
+	printf("]\n");
+
+
+	printf("Ratio Model Dims: %ux%u\n[", DERP_AC_BC_BUCKETS, DERP_AC_NUM_OF_COMP_ALGS);
+	for (i = 0; i < derp_ratio_model->count; i++) {
+		if (i != 0) {
+			printf(", ");
+		}
+		printf("%lu", derp_ratio_model->data[i]);
+	}
+	printf("]\n");
+
 	// TODO: print disk bps.
 //	printf("Disk BPS: {}\n")
 

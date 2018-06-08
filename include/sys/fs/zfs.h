@@ -598,6 +598,8 @@ typedef struct zpool_rewind_policy {
 
 /* Derp Stats */
 #define ZPOOL_CONFIG_VDEV_DERP_MODEL		"vdev_derp_model"
+#define ZPOOL_CONFIG_VDEV_DERP_RATE_MODEL	"vdev_derp_rate_model"
+#define ZPOOL_CONFIG_VDEV_DERP_RATIO_MODEL	"vdev_derp_ratio_model"
 #define ZPOOL_CONFIG_VDEV_DERP_DISK_BPS		"vdev_derp_disk_bps"
 #define ZPOOL_CONFIG_VDEV_DERP_TOTAL_BPS	"vdev_derp_total_bps"
 
@@ -891,7 +893,7 @@ typedef struct vdev_stat {
 } vdev_stat_t;
 
 #define DERP_AC_BC_BUCKETS 5
-#define DERP_AC_CPU_BUCKETS 5
+#define DERP_AC_CPU_BUCKETS 4
 #define DERP_AC_NUM_OF_COMP_ALGS 3
 #define DERP_AC_NUM_LEARN_VALUES 2
 

@@ -92,23 +92,12 @@ derp_compress zio_compress_to_derp_compress(enum zio_compress compress) {
 
 
 int derp_load_cur_stats(d_cpuload* stats) {
-//	int i;
-//	stats->last_idle_time = 80;
-//	stats->last_total_time = 100;
-//	stats->cur_idle_time = 100;
-//	stats->cur_total_time = 0;
-
 #ifdef _SPL_TIME_H
 	dprintf("cpu: good");
 	int i;
 
-//	stats->last_idle_time = 0;
-//	stats->last_total_time = 0;
 	stats->cur_idle_time = 0;
 	stats->cur_total_time = 0;
-
-//	stats->cur_idle_time = kcpustat_cpu(0).cpustat[CPUTIME_USER];
-//	stats->cur_total_time = get_idle_time(0);
 
 	for_each_possible_cpu(i) {
 		for (int j=0; j < NR_STATS; j++) {
@@ -117,11 +106,7 @@ int derp_load_cur_stats(d_cpuload* stats) {
 				stats->cur_idle_time += kcpustat_cpu(0).cpustat[j];
 			}
 		}
-//		stats->cur_idle_time = kcpustat_cpu(0).cpustat[CPUTIME_USER];
-//		stats->cur_total_time++;
 	}
-//	stats->cur_idle_time = CPUTIME_USER;
-//	get_cpu_idle_time_us(0, &stats->cur_total_time);
 #else
 	dprintf("cpu: bad");
 	stats->cur_idle_time = 0;
@@ -326,17 +311,11 @@ enum zio_compress derp_get_best_compress(vdev_t *rvd, uint64_t lsize, derp_bps_v
 	enum zio_compress c;
 	derp_compress derp_c;
 	vdev_stat_ex_t *stats = derp_get_vdev_ex_stats(rvd);
-//	derp_bps_variables_t bps_vars;
-//	derp_ratio_variables_t ratio_vars;
+
 //	uint64_t cur_bps = stats->vsx_derp_disk_bps[type];
 //	uint64_t cur_total_bps = stats->vsx_derp_total_bps[type];
-//	cur_total_bps = stats->max_bps;
 	uint64_t max_disk_bps = stats->max_bps;
 
-//	bps_vars.bc_bucket = bc_bucket;
-//	ratio_vars.bc_bucket = bc_bucket;
-
-//	uint64_t max_twr = 0;
 	uint64_t min_total_write_time = 0xFFFFFFFFFFFFFFFF;
 
 	uint64_t queue_time = get_queue_time(rvd, max_disk_bps);
@@ -360,7 +339,7 @@ enum zio_compress derp_get_best_compress(vdev_t *rvd, uint64_t lsize, derp_bps_v
 			compress_time = derp_calc_time_from_bps(c_rate, lsize);
 		}
 
-		uint64_t pre_write_time = derp_max(compress_time-queue_time, queue_time);  // = max(compress_time-queue_time, queue_time)
+		uint64_t pre_write_time = derp_max(compress_time, queue_time);
 		uint64_t estimated_after_compression_bytes = derp_apply_compress_ratio(lsize, c_ratio);
 		uint64_t disk_write_time = derp_calc_time_from_bps(max_disk_bps, estimated_after_compression_bytes);
 		uint64_t total_write_time = pre_write_time + disk_write_time;
@@ -369,27 +348,6 @@ enum zio_compress derp_get_best_compress(vdev_t *rvd, uint64_t lsize, derp_bps_v
 			min_total_write_time = total_write_time;
 			best_c = c;
 		}
-//		uint64_t queue_time = 0;
-
-//		uint64_t twr;
-//		if (c_rate > MAX_RATE) {  // Basically the compression rate is so quick that it doesn't have any influnce. E.g. No compression.
-//			twr = derp_apply_compress_ratio(max_disk_bps, c_ratio);
-//		} else {
-//			twr = (max_disk_bps*c_rate) / (max_disk_bps + (derp_apply_compress_ratio(c_rate, c_ratio)));
-//		}
-//		dprintf("derp:\tc: %s  \trate:%lu   \tratio:%lu  \ttwr:%lu rate: %lu", (&zio_compress_table[c])->ci_name, c_rate, c_ratio, twr, derp_apply_compress_ratio(c_rate, c_ratio));
-//		dprintf("derp:　　　　c: %s c_ratio: %u X: %u Y:%u", (&zio_compress_table[c])->ci_name, c_ratio, c_rate*c_ratio, (c_rate*c_ratio)/BYTES_FACTOR);
-//		dprintf("derp:　　　　c: %s twr: %u = (%u*%u) / (%u + %u)", (&zio_compress_table[c])->ci_name, twr, cur_bps, c_rate, cur_bps, derp_apply_compress_ratio(c_rate, c_ratio));
-//		dprintf("derp:　　　　c: %s twr: %u = (%u) / (%u)", (&zio_compress_table[c])->ci_name, twr, cur_bps*c_rate, cur_bps+derp_apply_compress_ratio(c_rate, c_ratio));
-//		if (twr == 0) {  // We don't know anything about this alg's speed, so let's try it out.
-//			return c;
-//		}
-//		total_delay = lsize / twr;
-//		total_delay =
-//		if (twr > max_twr) {
-//			max_twr = twr;
-//			best_c = c;
-//		}
 	}
 
 	// TODO: set real value
