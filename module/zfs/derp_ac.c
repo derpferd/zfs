@@ -322,6 +322,13 @@ enum zio_compress derp_get_best_compress(vdev_t *rvd, uint64_t lsize, derp_bps_v
 
 	enum zio_compress best_c = ZIO_COMPRESS_EMPTY; // Default to no compression
 	derp_set_default_compress(&best_c);
+
+	// Check preconditions
+	if (max_disk_bps == 0) {
+		dprintf("derp: Warning!!!! no disk bps!");
+		return best_c;
+	}
+
 	dprintf("Picking best...");
 	dprintf("\tMax Disk BPS: %lu", max_disk_bps);
 	derp_for_each_compress(derp_c) {
@@ -334,6 +341,9 @@ enum zio_compress derp_get_best_compress(vdev_t *rvd, uint64_t lsize, derp_bps_v
 
 		uint64_t compress_time;
 		if (c_rate > MAX_RATE) {  // Basically the compression rate is so quick that it doesn't have any influence. E.g. No compression.
+			compress_time = 0;
+		} else if (c_rate == 0) { // We don't know how fast this algorithm is.
+			dprintf("derp: Warning!!!! c_rate is 0!");
 			compress_time = 0;
 		} else {
 			compress_time = derp_calc_time_from_bps(c_rate, lsize);
